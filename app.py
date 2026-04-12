@@ -5,27 +5,66 @@ import numpy as np
 import time
 import requests
 import re
+import google.generativeai as genai
+from PIL import Image
 
 # --- SAYFA AYARLARI ---
 st.set_page_config(page_title="Hisse Sıralama Motoru", layout="wide")
-st.title("🔥 İdealite ve F/K Isı Haritası (Global & BIST)")
-st.markdown("Likidite ayarlı teknik metrikler ve normalize edilmiş F/K haritası.")
+st.title("🔥 İdealite ve F/K Isı Haritası (Yapay Zeka Destekli)")
+st.markdown("Likidite ayarlı teknik metrikler, normalize edilmiş F/K haritası ve **Gemini Görüntü Okuma** sistemi.")
 
-# --- GİRDİLER ---
+# --- GİRDİLER VE GEMINI YAPAY ZEKA ---
 st.sidebar.header("Parametreler")
 
-bist_mode = st.sidebar.checkbox("🇹🇷 Borsa İstanbul (BIST) Modu", value=False, help="Türk hisseleri için otomatik .IS uzantısı ekler ve yedek motoru ayarlar.")
+bist_mode = st.sidebar.checkbox("🇹🇷 Borsa İstanbul (BIST) Modu", value=False, help="Türk hisseleri için otomatik .IS uzantısı ekler.")
 
 if bist_mode:
     default_tickers = "THYAO, TUPRS, KCHOL, AKBNK, ISCTR, EREGL, FROTO, SISE, BIMAS, ASELS"
     default_bench = "XU100.IS"
-    default_dxy = "TRY=X" # Türk hisselerini Dolar kuruna göre düzeltmek istersen TRY=X kullanabilirsin, istemezsen DX-Y.NYB kalabilir.
+    default_dxy = "TRY=X" 
 else:
     default_tickers = "AAPL, MSFT, GOOGL, AMZN, NVDA, META, TSLA, INTC, AMD, NFLX"
     default_bench = "^GSPC"
     default_dxy = "DX-Y.NYB"
 
-tickers_input = st.sidebar.text_area("Hisse Sembolleri (Virgülle ayırın, Maks 100)", default_tickers)
+# --- GEMINI GÖRÜNTÜ OKUMA BÖLÜMÜ ---
+st.sidebar.markdown("---")
+st.sidebar.subheader("🤖 Resimden Hisse Çıkarma")
+gemini_api_key = st.sidebar.text_input("Gemini API Anahtarı (Zorunlu)", type="password", help="aistudio.google.com adresinden ücretsiz alabilirsiniz.")
+uploaded_file = st.sidebar.file_uploader("Hisse Listesi Resmi Yükle", type=["png", "jpg", "jpeg"])
+
+# Otomatik doldurma için hafıza (Session State) ayarı
+if "current_tickers" not in st.session_state:
+    st.session_state.current_tickers = default_tickers
+
+if uploaded_file is not None and gemini_api_key:
+    if st.sidebar.button("✨ Resmi Oku ve Listeyi Doldur"):
+        with st.spinner("Gemini resmi inceliyor, hisseleri buluyor..."):
+            try:
+                genai.configure(api_key=gemini_api_key)
+                model = genai.GenerativeModel('gemini-1.5-flash')
+                img = Image.open(uploaded_file)
+                
+                prompt = """
+                Bu resimde bir borsa/hisse tarama tablosu veya listesi var. 
+                Senden tek istediğim, resimdeki hisse senedi sembollerini (ticker) bulman.
+                Bana SADECE büyük harflerle, aralarında virgül ve boşluk olan bir liste ver.
+                Örnek çıktı: AAPL, MSFT, TSLA
+                Başka hiçbir cümle, açıklama veya kelime yazma! Sadece semboller.
+                """
+                response = model.generate_content([prompt, img])
+                
+                # Gemini'nin bulduğu hisseleri kutuya yazdırıyoruz
+                st.session_state.current_tickers = response.text.strip()
+                st.sidebar.success("Hisseler başarıyla çekildi! Aşağıdan analizi başlatabilirsiniz.")
+            except Exception as e:
+                st.sidebar.error(f"Yapay Zeka Hatası: Lütfen API anahtarınızı kontrol edin. ({str(e)[:40]})")
+
+st.sidebar.markdown("---")
+
+# Hisselerin girildiği ana kutu (Gemini doldurursa otomatik güncellenir)
+tickers_input = st.sidebar.text_area("Hisse Sembolleri (Virgülle ayırın, Maks 100)", st.session_state.current_tickers, height=150)
+
 bench_ticker = st.sidebar.text_input("Piyasa Endeksi", default_bench)
 dxy_ticker = st.sidebar.text_input("Kur/Likidite (DXY)", default_dxy)
 lookback = st.sidebar.number_input("Alan Oranı Geriye Bakış (Gün)", value=500)
@@ -54,17 +93,15 @@ def calc_weighted_rs(series):
             0.2 * calc_roc(series, 252))
 
 def get_pe_data(sym, debug_logs, is_bist):
-    """Yahoo'dan veriyi çeker, ABD hissesiyse Finviz yedek motorunu kullanır."""
     pe_val = np.nan
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     
-    # 1. DENEME: YFINANCE (Yahoo)
+    # 1. YFINANCE (Yahoo)
     try:
         session = requests.Session()
         session.headers.update(headers)
         info = yf.Ticker(sym, session=session).info
         
-        # BIST için Trailing PE (Geçmiş F/K) daha yaygındır, onu önceliklendiriyoruz
         if is_bist:
             pe_val = info.get('trailingPE', info.get('forwardPE', np.nan))
         else:
@@ -78,16 +115,14 @@ def get_pe_data(sym, debug_logs, is_bist):
     except Exception as e:
         debug_logs.append(f"❌ {sym}: Yahoo hatası.")
 
-    # 2. DENEME: FINVIZ (SADECE ABD HİSSELERİ İÇİN)
+    # 2. FINVIZ
     if is_bist:
-        debug_logs.append(f"⚠️ {sym}: BIST Modu açık olduğu için Finviz kullanılamaz.")
         return np.nan
         
     debug_logs.append(f"🔄 {sym}: Finviz yedek motoru devreye giriyor...")
     try:
         url = f"https://finviz.com/quote.ashx?t={sym}"
         res = requests.get(url, headers=headers, timeout=5)
-        
         match_fwd = re.search(r'Forward P/E.*?<b>(.*?)</b>', res.text)
         match_pe = re.search(r'>P/E<.*?<b>(.*?)</b>', res.text)
         
@@ -99,15 +134,13 @@ def get_pe_data(sym, debug_logs, is_bist):
             pe_val = float(match_pe.group(1))
             debug_logs.append(f"✅ {sym}: Veri FINVIZ'den kurtarıldı ({pe_val}).")
             return pe_val
-        else:
-            debug_logs.append(f"❌ {sym}: Finviz'de de veri bulunamadı.")
     except Exception as e:
         debug_logs.append(f"❌ {sym}: Finviz başarısız.")
         
     return np.nan
 
 # --- VERİ ÇEKME VE İŞLEME ---
-if st.sidebar.button("Analizi Başlat"):
+if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
     debug_logs = [] 
     
     with st.spinner("1/2: Fiyat verileri indiriliyor (Teknik Analiz)..."):
@@ -118,9 +151,7 @@ if st.sidebar.button("Analizi Başlat"):
         p_index = data[bench_ticker]
         p_curr = data[dxy_ticker]
         
-        # Likidite Düzeltmesi
         adj_bench_series = pd.Series(np.where(p_curr > 0, p_index / p_curr, p_index), index=data.index)
-        
         bench_rs = calc_weighted_rs(adj_bench_series)
         index_ret = calc_roc(p_index, 1)
 
@@ -138,7 +169,7 @@ if st.sidebar.button("Analizi Başlat"):
     with st.spinner("Isı Haritası Oluşturuluyor..."):
         results = []
         valid_pes = [v for v in fundamental_data.values() if not np.isnan(v)]
-        avg_basket_pe = np.median(valid_pes) if valid_pes else 10.0 # BIST için ortalama F/K genelde daha düşüktür
+        avg_basket_pe = np.median(valid_pes) if valid_pes else 10.0
         
         for sym in tickers:
             if sym not in data.columns or data[sym].isnull().all():
@@ -163,7 +194,6 @@ if st.sidebar.button("Analizi Başlat"):
             pe_val = fundamental_data.get(sym, np.nan)
             cheapness_ratio = pe_val / avg_basket_pe if not np.isnan(pe_val) else np.nan
             
-            # Tabloda temiz görünmesi için .IS takısını kaldıralım
             display_sym = sym.replace(".IS", "") if bist_mode else sym
             
             results.append({
