@@ -99,15 +99,19 @@ def calc_weighted_rs(series):
             0.2 * calc_roc(series, 189) +
             0.2 * calc_roc(series, 252))
 
-def get_pe_data(sym, debug_logs, is_bist):
+def get_stock_metadata(sym, debug_logs, is_bist):
     pe_val = np.nan
+    sector = "Bilinmiyor"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     
     # 1. YFINANCE (Yahoo)
     try:
         session = requests.Session()
         session.headers.update(headers)
-        info = yf.Ticker(sym, session=session).info
+        ticker_obj = yf.Ticker(sym, session=session)
+        info = ticker_obj.info
+        
+        sector = info.get('sector', 'Bilinmiyor')
         
         if is_bist:
             pe_val = info.get('trailingPE', info.get('forwardPE', np.nan))
@@ -115,16 +119,16 @@ def get_pe_data(sym, debug_logs, is_bist):
             pe_val = info.get('forwardPE', info.get('trailingPE', np.nan))
             
         if pd.notna(pe_val) and pe_val > 0:
-            debug_logs.append(f"✅ {sym}: Veri Yahoo'dan çekildi ({pe_val:.2f}).")
-            return pe_val
+            debug_logs.append(f"✅ {sym}: Veri Yahoo'dan çekildi (Sektör: {sector}, F/K: {pe_val:.2f}).")
+            return pe_val, sector
         else:
-            debug_logs.append(f"⚠️ {sym}: Yahoo veriyi boş gönderdi.")
+            debug_logs.append(f"⚠️ {sym}: Yahoo F/K verisini boş gönderdi.")
     except Exception as e:
         debug_logs.append(f"❌ {sym}: Yahoo hatası.")
 
-    # 2. FINVIZ
+    # 2. FINVIZ (Sadece ABD hisseleri için F/K kurtarma)
     if is_bist:
-        return np.nan
+        return np.nan, sector
         
     debug_logs.append(f"🔄 {sym}: Finviz yedek motoru devreye giriyor...")
     try:
@@ -135,16 +139,16 @@ def get_pe_data(sym, debug_logs, is_bist):
         
         if match_fwd and match_fwd.group(1) != '-':
             pe_val = float(match_fwd.group(1))
-            debug_logs.append(f"✅ {sym}: Veri FINVIZ'den kurtarıldı ({pe_val}).")
-            return pe_val
+            debug_logs.append(f"✅ {sym}: F/K verisi FINVIZ'den kurtarıldı ({pe_val}).")
         elif match_pe and match_pe.group(1) != '-':
             pe_val = float(match_pe.group(1))
-            debug_logs.append(f"✅ {sym}: Veri FINVIZ'den kurtarıldı ({pe_val}).")
-            return pe_val
+            debug_logs.append(f"✅ {sym}: F/K verisi FINVIZ'den kurtarıldı ({pe_val}).")
+        else:
+            debug_logs.append(f"❌ {sym}: Finviz başarısız.")
     except Exception as e:
-        debug_logs.append(f"❌ {sym}: Finviz başarısız.")
+        debug_logs.append(f"❌ {sym}: Finviz hatası.")
         
-    return np.nan
+    return pe_val, sector
 
 # --- VERİ ÇEKME VE İŞLEME ---
 if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
@@ -162,12 +166,13 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
         bench_rs = calc_weighted_rs(adj_bench_series)
         index_ret = calc_roc(p_index, 1)
 
-    with st.spinner("2/2: Temel veriler (F/K) çekiliyor..."):
+    with st.spinner("2/2: Temel veriler (F/K ve Sektör) çekiliyor..."):
         progress_bar = st.progress(0)
         fundamental_data = {}
         
         for i, sym in enumerate(tickers):
-            fundamental_data[sym] = get_pe_data(sym, debug_logs, bist_mode)
+            pe, sec = get_stock_metadata(sym, debug_logs, bist_mode)
+            fundamental_data[sym] = {"pe": pe, "sector": sec}
             time.sleep(0.3) 
             progress_bar.progress((i + 1) / len(tickers))
         
@@ -175,7 +180,7 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
 
     with st.spinner("Isı Haritası Oluşturuluyor..."):
         results = []
-        valid_pes = [v for v in fundamental_data.values() if not np.isnan(v)]
+        valid_pes = [d["pe"] for d in fundamental_data.values() if not np.isnan(d["pe"])]
         avg_basket_pe = np.median(valid_pes) if valid_pes else 10.0
         
         for sym in tickers:
@@ -198,13 +203,18 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
             beta_adj_score = rs_ratio / (0.1 if beta <= 0.1 else beta)
             ideal_score = (rs_ratio + beta_adj_score) / 2.0
             
-            pe_val = fundamental_data.get(sym, np.nan)
+            # F/K ve Sektör verilerini al
+            f_info = fundamental_data.get(sym, {"pe": np.nan, "sector": "Bilinmiyor"})
+            pe_val = f_info["pe"]
+            sector_val = f_info["sector"]
+            
             cheapness_ratio = pe_val / avg_basket_pe if not np.isnan(pe_val) else np.nan
             
             display_sym = sym.replace(".IS", "") if bist_mode else sym
             
             results.append({
                 "Hisse": display_sym,
+                "Sektör": sector_val,
                 "Saf Oran (P/N)": round(rs_ratio, 2),
                 "Beta Skor": round(beta_adj_score, 2),
                 "İdealite": round(ideal_score, 2),
@@ -216,6 +226,7 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
             df_results = pd.DataFrame(results)
             st.markdown(f"**Sepet Medyan F/K:** `{round(avg_basket_pe, 2)}` *(Referans değer)*")
             
+            # İdealiteye göre ilk sıralama
             df_sorted = df_results.sort_values(by="İdealite", ascending=False).reset_index(drop=True)
             
             styled_df = df_sorted.style.background_gradient(
@@ -228,7 +239,9 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
                 "F/K Değeri": "{:.2f}"
             }, na_rep="Veri Yok")
             
-            st.dataframe(styled_df, use_container_width=True, height=600)
+            # height=1050 parametresi yaklaşık 30 satırın kaydırma çubuğu olmadan görünmesini sağlar.
+            # Başlıklara tıklanarak otomatik sıralama yapılabilir.
+            st.dataframe(styled_df, use_container_width=True, height=1050)
             
             st.markdown("---")
             with st.expander("🛠️ Hata Ayıklama Konsolu (Tıkla Aç)"):
