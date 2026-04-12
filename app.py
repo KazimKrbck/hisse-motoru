@@ -1,8 +1,10 @@
 import streamlit as st
 import yfinance as yf
-from yahooquery import Ticker as YQTicker
 import pandas as pd
 import numpy as np
+import time
+import requests
+import re
 
 # --- SAYFA AYARLARI ---
 st.set_page_config(page_title="Hisse Sıralama Motoru", layout="wide")
@@ -16,7 +18,6 @@ bench_ticker = st.sidebar.text_input("Piyasa Endeksi", "^GSPC")
 dxy_ticker = st.sidebar.text_input("Kur/Likidite (DXY)", "DX-Y.NYB")
 lookback = st.sidebar.number_input("Alan Oranı Geriye Bakış (Gün)", value=500)
 
-# Sembolleri temizle ve max 100 ile sınırla
 tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
 if len(tickers) > 100:
     st.sidebar.warning("100'den fazla hisse girdiniz. Performans için sadece ilk 100 hisse işlenecek.")
@@ -32,11 +33,55 @@ def calc_weighted_rs(series):
             0.2 * calc_roc(series, 189) +
             0.2 * calc_roc(series, 252))
 
+# FİNANSAL VERİ KAZIMA (SCRAPING) MOTORU
+def get_pe_data(sym, debug_logs):
+    """Önce Yahoo'yu dener, başarısız olursa Finviz'den kazır."""
+    pe_val = np.nan
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    
+    # 1. DENEME: YFINANCE (Yahoo)
+    try:
+        info = yf.Ticker(sym).info
+        pe_val = info.get('forwardPE', info.get('trailingPE', np.nan))
+        if pd.notna(pe_val) and pe_val > 0:
+            debug_logs.append(f"✅ {sym}: Veri Yahoo'dan başarıyla çekildi ({pe_val}).")
+            return pe_val
+        else:
+            debug_logs.append(f"⚠️ {sym}: Yahoo veriyi boş (None) veya negatif gönderdi.")
+    except Exception as e:
+        debug_logs.append(f"❌ {sym}: Yahoo bağlantı hatası -> {str(e)[:50]}")
+
+    # 2. DENEME: FINVIZ (Yedek Motor)
+    debug_logs.append(f"🔄 {sym}: Finviz yedek motoru devreye giriyor...")
+    try:
+        url = f"https://finviz.com/quote.ashx?t={sym}"
+        res = requests.get(url, headers=headers, timeout=5)
+        
+        # Sitenin kaynak kodundan F/K satırını bulma
+        match_fwd = re.search(r'Forward P/E.*?<b>(.*?)</b>', res.text)
+        match_pe = re.search(r'>P/E<.*?<b>(.*?)</b>', res.text)
+        
+        if match_fwd and match_fwd.group(1) != '-':
+            pe_val = float(match_fwd.group(1))
+            debug_logs.append(f"✅ {sym}: Veri FINVIZ'den (Forward P/E) kurtarıldı ({pe_val}).")
+            return pe_val
+        elif match_pe and match_pe.group(1) != '-':
+            pe_val = float(match_pe.group(1))
+            debug_logs.append(f"✅ {sym}: Veri FINVIZ'den (Standart P/E) kurtarıldı ({pe_val}).")
+            return pe_val
+        else:
+            debug_logs.append(f"❌ {sym}: Finviz'de de F/K verisi bulunamadı (Şirket zararda olabilir).")
+    except Exception as e:
+        debug_logs.append(f"❌ {sym}: Finviz motoru da başarısız oldu -> {str(e)[:50]}")
+        
+    return np.nan
+
 # --- VERİ ÇEKME VE İŞLEME ---
 if st.sidebar.button("Analizi Başlat"):
+    debug_logs = [] # Hata kayıtlarını tutacağımız liste
+    
     with st.spinner("1/2: Fiyat verileri indiriliyor (Teknik Analiz)..."):
         all_tickers = tickers + [bench_ticker, dxy_ticker]
-        
         data = yf.download(all_tickers, period="4y", interval="1d")["Close"]
         data = data.ffill().dropna(subset=[bench_ticker])
         
@@ -47,36 +92,21 @@ if st.sidebar.button("Analizi Başlat"):
         bench_rs = calc_weighted_rs(adj_bench_series)
         index_ret = calc_roc(p_index, 1)
 
-    with st.spinner("2/2: Temel veriler (F/K) yahooquery ile tek seferde çekiliyor..."):
+    with st.spinner("2/2: Temel veriler Çift Motorlu Sistemle (Yahoo + Finviz) çekiliyor..."):
+        progress_bar = st.progress(0)
         fundamental_data = {}
-        try:
-            # YENİ MOTOR: Tüm hisseleri tek bir pakette Yahoo'ya soruyoruz (Bot korumasına takılmaz, saniyeler sürer)
-            yq_tickers = YQTicker(tickers)
-            details = yq_tickers.summary_detail
+        
+        for i, sym in enumerate(tickers):
+            # Çift motorlu fonksiyonumuzu çağırıyoruz
+            fundamental_data[sym] = get_pe_data(sym, debug_logs)
             
-            for sym in tickers:
-                try:
-                    if isinstance(details, dict) and sym in details:
-                        sym_data = details[sym]
-                        if isinstance(sym_data, dict):
-                            # Önce İleriye Dönük (forwardPE), yoksa Geçmiş (trailingPE) F/K
-                            pe_val = sym_data.get('forwardPE', sym_data.get('trailingPE', np.nan))
-                            if pe_val is not None and pe_val > 0:
-                                fundamental_data[sym] = pe_val
-                            else:
-                                fundamental_data[sym] = np.nan
-                        else:
-                            fundamental_data[sym] = np.nan
-                    else:
-                        fundamental_data[sym] = np.nan
-                except:
-                    fundamental_data[sym] = np.nan
-        except Exception as e:
-            st.error("Yahoo F/K verilerini vermeyi reddetti.")
+            time.sleep(0.3) # Sunucuları yormamak için kısa bekleme
+            progress_bar.progress((i + 1) / len(tickers))
+        
+        progress_bar.empty()
 
     with st.spinner("Isı Haritası Oluşturuluyor..."):
         results = []
-        
         valid_pes = [v for v in fundamental_data.values() if not np.isnan(v)]
         avg_basket_pe = np.median(valid_pes) if valid_pes else 15.0
         
@@ -101,7 +131,6 @@ if st.sidebar.button("Analizi Başlat"):
             ideal_score = (rs_ratio + beta_adj_score) / 2.0
             
             pe_val = fundamental_data.get(sym, np.nan)
-            
             cheapness_ratio = pe_val / avg_basket_pe if not np.isnan(pe_val) else np.nan
             
             results.append({
@@ -130,5 +159,18 @@ if st.sidebar.button("Analizi Başlat"):
             }, na_rep="Veri Yok")
             
             st.dataframe(styled_df, use_container_width=True, height=600)
+            
+            # --- DEBUG (HATA AYIKLAMA) BÖLÜMÜ ---
+            st.markdown("---")
+            with st.expander("🛠️ Hata Ayıklama (Debug) Konsolu - F/K Neden 'None' Çıkıyor? (Tıkla Aç)"):
+                st.write("Aşağıda sistemin arka planda Yahoo ve Finviz sunucularıyla yaptığı konuşmalar yer almaktadır:")
+                for log in debug_logs:
+                    if "✅" in log:
+                        st.success(log)
+                    elif "⚠️" in log or "🔄" in log:
+                        st.warning(log)
+                    else:
+                        st.error(log)
+                        
         else:
             st.error("Veri işlenemedi. Lütfen sembolleri kontrol edin.")
