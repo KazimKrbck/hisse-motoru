@@ -94,54 +94,60 @@ def calc_weighted_rs(series):
             0.2 * calc_roc(series, 189) +
             0.2 * calc_roc(series, 252))
 
-def get_stock_metadata(sym, debug_logs, is_bist):
+# ÖNBELLEKLEME EKLENDİ (TTL: 86400 saniye = 1 Gün). Veriler 1 gün boyunca API'ye gitmeden hafızadan okunur.
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_fundamental_data(sym, is_bist):
     pe_val = np.nan
     sector = "Bilinmiyor"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     
+    # 1. YFINANCE (Yahoo)
     try:
-        session = requests.Session()
-        session.headers.update(headers)
-        ticker_obj = yf.Ticker(sym, session=session)
+        ticker_obj = yf.Ticker(sym)
         info = ticker_obj.info
         
-        sector = info.get('sector', 'Bilinmiyor')
+        sector = info.get('sector', info.get('industry', 'Bilinmiyor'))
         
         if is_bist:
             pe_val = info.get('trailingPE', info.get('forwardPE', np.nan))
         else:
             pe_val = info.get('forwardPE', info.get('trailingPE', np.nan))
             
-        if pd.notna(pe_val) and pe_val > 0:
-            debug_logs.append(f"✅ {sym}: Veri Yahoo'dan çekildi (Sektör: {sector}, F/K: {pe_val:.2f}).")
-            return pe_val, sector
-        else:
-            debug_logs.append(f"⚠️ {sym}: Yahoo F/K verisini boş gönderdi.")
-    except Exception as e:
-        debug_logs.append(f"❌ {sym}: Yahoo hatası.")
+        if pd.notna(pe_val) and pe_val > 0 and sector != "Bilinmiyor":
+            return pe_val, sector, f"✅ {sym}: Veri Yahoo'dan çekildi.", "success"
+    except Exception:
+        pass # Hata mesajını Finviz denemesinden sonraya bırakıyoruz
 
+    # 2. FINVIZ (Yedek Motor)
     if is_bist:
-        return np.nan, sector
+        return np.nan, sector, f"⚠️ {sym}: BIST hissesi için Yahoo eksik veri gönderdi.", "warning"
         
-    debug_logs.append(f"🔄 {sym}: Finviz yedek motoru devreye giriyor...")
     try:
         url = f"https://finviz.com/quote.ashx?t={sym}"
         res = requests.get(url, headers=headers, timeout=5)
-        match_fwd = re.search(r'Forward P/E.*?<b>(.*?)</b>', res.text)
-        match_pe = re.search(r'>P/E<.*?<b>(.*?)</b>', res.text)
         
-        if match_fwd and match_fwd.group(1) != '-':
-            pe_val = float(match_fwd.group(1))
-            debug_logs.append(f"✅ {sym}: F/K verisi FINVIZ'den kurtarıldı ({pe_val}).")
-        elif match_pe and match_pe.group(1) != '-':
-            pe_val = float(match_pe.group(1))
-            debug_logs.append(f"✅ {sym}: F/K verisi FINVIZ'den kurtarıldı ({pe_val}).")
+        if sector == "Bilinmiyor":
+            match_sec = re.search(r'f=sec_[^>]+>([^<]+)</a>', res.text)
+            if match_sec:
+                sector = match_sec.group(1)
+        
+        if np.isnan(pe_val):
+            match_fwd = re.search(r'Forward P/E.*?<b>(.*?)</b>', res.text)
+            match_pe = re.search(r'>P/E<.*?<b>(.*?)</b>', res.text)
+            
+            if match_fwd and match_fwd.group(1) != '-':
+                pe_val = float(match_fwd.group(1))
+            elif match_pe and match_pe.group(1) != '-':
+                pe_val = float(match_pe.group(1))
+        
+        if sector != "Bilinmiyor" or not np.isnan(pe_val):
+            return pe_val, sector, f"🔄 {sym}: Eksikler FINVIZ üzerinden kurtarıldı.", "success"
         else:
-            debug_logs.append(f"❌ {sym}: Finviz başarısız.")
-    except Exception as e:
-        debug_logs.append(f"❌ {sym}: Finviz hatası.")
-        
-    return pe_val, sector
+            return pe_val, sector, f"❌ {sym}: Veri bulunamadı.", "error"
+            
+    except Exception:
+        return pe_val, sector, f"❌ {sym}: Finviz bağlantı hatası.", "error"
+
 
 # --- VERİ ÇEKME VE İŞLEME ---
 if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
@@ -159,14 +165,22 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
         bench_rs = calc_weighted_rs(adj_bench_series)
         index_ret = calc_roc(p_index, 1)
 
-    with st.spinner("2/2: Temel veriler (F/K ve Sektör) çekiliyor..."):
+    with st.spinner("2/2: Temel veriler (F/K ve Sektör) çekiliyor (Önbellekli Sistem)..."):
         progress_bar = st.progress(0)
         fundamental_data = {}
         
         for i, sym in enumerate(tickers):
-            pe, sec = get_stock_metadata(sym, debug_logs, bist_mode)
+            pe, sec, log_msg, log_type = fetch_fundamental_data(sym, bist_mode)
             fundamental_data[sym] = {"pe": pe, "sector": sec}
-            time.sleep(0.2) 
+            
+            # Logları arayüz için topluyoruz
+            if log_type == "success":
+                debug_logs.append(log_msg)
+            elif log_type == "warning":
+                debug_logs.append(log_msg)
+            else:
+                debug_logs.append(log_msg)
+                
             progress_bar.progress((i + 1) / len(tickers))
         
         progress_bar.empty()
@@ -248,9 +262,9 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
             st.markdown("---")
             with st.expander("🛠️ Hata Ayıklama Konsolu (Tıkla Aç)"):
                 for log in debug_logs:
-                    if "✅" in log:
+                    if "✅" in log or "🔄" in log:
                         st.success(log)
-                    elif "⚠️" in log or "🔄" in log:
+                    elif "⚠️" in log:
                         st.warning(log)
                     else:
                         st.error(log)
