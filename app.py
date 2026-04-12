@@ -49,7 +49,7 @@ if uploaded_file is not None and gemini_api_key:
         with st.spinner("Gemini resmi inceliyor, hisseleri buluyor..."):
             try:
                 genai.configure(api_key=gemini_api_key)
-                model = genai.GenerativeModel('gemini-1.5-flash-latest')
+                model = genai.GenerativeModel('gemini-pro-vision')
                 img = Image.open(uploaded_file)
                 
                 prompt = """
