@@ -31,7 +31,6 @@ else:
 st.sidebar.markdown("---")
 st.sidebar.subheader("🤖 Resimden Hisse Çıkarma")
 
-# Şifreyi Streamlit kasasından al, yoksa kutu göster
 if "GEMINI_API_KEY" in st.secrets:
     gemini_api_key = st.secrets["GEMINI_API_KEY"]
     st.sidebar.success("🔑 Gemini API Anahtarı gizli kasadan güvenle yüklendi!")
@@ -40,7 +39,6 @@ else:
 
 uploaded_file = st.sidebar.file_uploader("Hisse Listesi Resmi Yükle", type=["png", "jpg", "jpeg"])
 
-# Otomatik doldurma için hafıza (Session State) ayarı
 if "current_tickers" not in st.session_state:
     st.session_state.current_tickers = default_tickers
 
@@ -61,7 +59,6 @@ if uploaded_file is not None and gemini_api_key:
                 """
                 response = model.generate_content([prompt, img])
                 
-                # Gemini'nin bulduğu hisseleri kutuya yazdırıyoruz
                 st.session_state.current_tickers = response.text.strip()
                 st.sidebar.success("Hisseler başarıyla çekildi! Aşağıdan analizi başlatabilirsiniz.")
             except Exception as e:
@@ -69,14 +66,12 @@ if uploaded_file is not None and gemini_api_key:
 
 st.sidebar.markdown("---")
 
-# Hisselerin girildiği ana kutu
 tickers_input = st.sidebar.text_area("Hisse Sembolleri (Virgülle ayırın, Maks 100)", st.session_state.current_tickers, height=150)
 
 bench_ticker = st.sidebar.text_input("Piyasa Endeksi", default_bench)
 dxy_ticker = st.sidebar.text_input("Kur/Likidite (DXY)", default_dxy)
 lookback = st.sidebar.number_input("Alan Oranı Geriye Bakış (Gün)", value=500)
 
-# Sembolleri temizle ve BIST modu açıksa .IS ekle
 raw_tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
 tickers = []
 for t in raw_tickers:
@@ -104,7 +99,6 @@ def get_stock_metadata(sym, debug_logs, is_bist):
     sector = "Bilinmiyor"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     
-    # 1. YFINANCE (Yahoo)
     try:
         session = requests.Session()
         session.headers.update(headers)
@@ -126,7 +120,6 @@ def get_stock_metadata(sym, debug_logs, is_bist):
     except Exception as e:
         debug_logs.append(f"❌ {sym}: Yahoo hatası.")
 
-    # 2. FINVIZ (Sadece ABD hisseleri için F/K kurtarma)
     if is_bist:
         return np.nan, sector
         
@@ -173,7 +166,7 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
         for i, sym in enumerate(tickers):
             pe, sec = get_stock_metadata(sym, debug_logs, bist_mode)
             fundamental_data[sym] = {"pe": pe, "sector": sec}
-            time.sleep(0.3) 
+            time.sleep(0.2) 
             progress_bar.progress((i + 1) / len(tickers))
         
         progress_bar.empty()
@@ -188,6 +181,14 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
                 continue
                 
             p_close = data[sym]
+            
+            # --- IPO FİLTRESİ ---
+            valid_days = p_close.dropna().count()
+            is_ipo = valid_days < lookback
+            
+            if is_ipo:
+                debug_logs.append(f"⚠️ {sym}: {valid_days} günlük veri var. Kriter altı olduğu için IPO işaretlendi.")
+            
             stock_rs = calc_weighted_rs(p_close)
             
             diff = (stock_rs - bench_rs).tail(lookback)
@@ -203,12 +204,15 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
             beta_adj_score = rs_ratio / (0.1 if beta <= 0.1 else beta)
             ideal_score = (rs_ratio + beta_adj_score) / 2.0
             
-            # F/K ve Sektör verilerini al
             f_info = fundamental_data.get(sym, {"pe": np.nan, "sector": "Bilinmiyor"})
             pe_val = f_info["pe"]
             sector_val = f_info["sector"]
             
-            cheapness_ratio = pe_val / avg_basket_pe if not np.isnan(pe_val) else np.nan
+            # Eğer IPO ise Ucuzluk Skoruna gizli bir -999 atıyoruz (Formatta yakalamak için)
+            if is_ipo:
+                cheapness_ratio = -999 
+            else:
+                cheapness_ratio = pe_val / avg_basket_pe if not np.isnan(pe_val) else np.nan
             
             display_sym = sym.replace(".IS", "") if bist_mode else sym
             
@@ -226,22 +230,20 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
             df_results = pd.DataFrame(results)
             st.markdown(f"**Sepet Medyan F/K:** `{round(avg_basket_pe, 2)}` *(Referans değer)*")
             
-            # İdealiteye göre ilk sıralama
             df_sorted = df_results.sort_values(by="İdealite", ascending=False).reset_index(drop=True)
             
+            # Lambda ile -999'u yakalayıp "IPO" yazdırıyoruz, aksi halde sadece skoru yazıyoruz
             styled_df = df_sorted.style.background_gradient(
                 cmap='RdYlGn_r', 
                 subset=['Ucuzluk Skoru (x)'], 
                 vmin=0.5, 
                 vmax=2.0  
             ).format({
-                "Ucuzluk Skoru (x)": "{:.2f}",
+                "Ucuzluk Skoru (x)": lambda x: "IPO" if x == -999 else (f"{x:.2f}" if pd.notna(x) else "Veri Yok"),
                 "F/K Değeri": "{:.2f}"
             }, na_rep="Veri Yok")
             
-            # height=1050 parametresi yaklaşık 30 satırın kaydırma çubuğu olmadan görünmesini sağlar.
-            # Başlıklara tıklanarak otomatik sıralama yapılabilir.
-            st.dataframe(styled_df, use_container_width=True, height=1050)
+            st.dataframe(styled_df, use_container_width=True, height=1150)
             
             st.markdown("---")
             with st.expander("🛠️ Hata Ayıklama Konsolu (Tıkla Aç)"):
