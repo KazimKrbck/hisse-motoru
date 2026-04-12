@@ -31,52 +31,43 @@ else:
 st.sidebar.markdown("---")
 st.sidebar.subheader("🤖 Resimden Hisse Çıkarma")
 
-# Şifreyi Streamlit kasasından al, yoksa kutu göster
+# Şifreyi Streamlit kasasından al, yoksa manuel giriş kutusu göster
 if "GEMINI_API_KEY" in st.secrets:
     gemini_api_key = st.secrets["GEMINI_API_KEY"]
-    st.sidebar.success("🔑 Gemini API Anahtarı gizli kasadan güvenle yüklendi!")
+    st.sidebar.success("🔑 Gemini API Anahtarı gizli kasadan yüklendi!")
 else:
-    gemini_api_key = st.sidebar.text_input("Gemini API Anahtarı (Zorunlu)", type="password", help="aistudio.google.com adresinden ücretsiz alabilirsiniz.")
+    gemini_api_key = st.sidebar.text_input("Gemini API Anahtarı (Zorunlu)", type="password")
 
 uploaded_file = st.sidebar.file_uploader("Hisse Listesi Resmi Yükle", type=["png", "jpg", "jpeg"])
 
-# Otomatik doldurma için hafıza (Session State) ayarı
 if "current_tickers" not in st.session_state:
     st.session_state.current_tickers = default_tickers
 
 if uploaded_file is not None and gemini_api_key:
     if st.sidebar.button("✨ Resmi Oku ve Listeyi Doldur"):
-        with st.spinner("Gemini resmi inceliyor, hisseleri buluyor..."):
+        with st.spinner("Gemini resmi inceliyor..."):
             try:
                 genai.configure(api_key=gemini_api_key)
+                # En güncel model ismini kullanıyoruz
                 model = genai.GenerativeModel('gemini-2.5-flash')
                 img = Image.open(uploaded_file)
                 
-                prompt = """
-                Bu resimde bir borsa/hisse tarama tablosu veya listesi var. 
-                Senden tek istediğim, resimdeki hisse senedi sembollerini (ticker) bulman.
-                Bana SADECE büyük harflerle, aralarında virgül ve boşluk olan bir liste ver.
-                Örnek çıktı: AAPL, MSFT, TSLA
-                Başka hiçbir cümle, açıklama veya kelime yazma! Sadece semboller.
-                """
+                prompt = "Resimdeki borsa sembollerini bul. Sadece büyük harflerle, aralarında virgül olan bir liste ver. Örn: AAPL, MSFT"
                 response = model.generate_content([prompt, img])
                 
-                # Gemini'nin bulduğu hisseleri kutuya yazdırıyoruz
                 st.session_state.current_tickers = response.text.strip()
-                st.sidebar.success("Hisseler başarıyla çekildi! Aşağıdan analizi başlatabilirsiniz.")
+                st.sidebar.success("Hisseler başarıyla çekildi!")
             except Exception as e:
-                st.sidebar.error(f"Yapay Zeka Hatası: Lütfen API anahtarınızı kontrol edin. ({str(e)[:40]})")
+                st.sidebar.error(f"Hata: {str(e)[:50]}")
 
 st.sidebar.markdown("---")
 
 # Hisselerin girildiği ana kutu
-tickers_input = st.sidebar.text_area("Hisse Sembolleri (Virgülle ayırın, Maks 100)", st.session_state.current_tickers, height=150)
-
+tickers_input = st.sidebar.text_area("Hisse Sembolleri", st.session_state.current_tickers, height=150)
 bench_ticker = st.sidebar.text_input("Piyasa Endeksi", default_bench)
 dxy_ticker = st.sidebar.text_input("Kur/Likidite (DXY)", default_dxy)
 lookback = st.sidebar.number_input("Alan Oranı Geriye Bakış (Gün)", value=500)
 
-# Sembolleri temizle ve BIST modu açıksa .IS ekle
 raw_tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
 tickers = []
 for t in raw_tickers:
@@ -85,11 +76,7 @@ for t in raw_tickers:
     else:
         tickers.append(t)
 
-if len(tickers) > 100:
-    st.sidebar.warning("100'den fazla hisse girdiniz. Performans için sadece ilk 100 hisse işlenecek.")
-    tickers = tickers[:100]
-
-# --- HESAPLAMA FONKSİYONLARI ---
+# --- HESAPLAMA VE MOTORLAR ---
 def calc_roc(series, periods):
     return series.pct_change(periods=periods) * 100
 
@@ -103,144 +90,79 @@ def get_pe_data(sym, debug_logs, is_bist):
     pe_val = np.nan
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     
-    # 1. YFINANCE (Yahoo)
     try:
         session = requests.Session()
         session.headers.update(headers)
         info = yf.Ticker(sym, session=session).info
+        pe_val = info.get('trailingPE', info.get('forwardPE', np.nan)) if is_bist else info.get('forwardPE', info.get('trailingPE', np.nan))
         
-        if is_bist:
-            pe_val = info.get('trailingPE', info.get('forwardPE', np.nan))
-        else:
-            pe_val = info.get('forwardPE', info.get('trailingPE', np.nan))
-            
         if pd.notna(pe_val) and pe_val > 0:
-            debug_logs.append(f"✅ {sym}: Veri Yahoo'dan çekildi ({pe_val:.2f}).")
+            debug_logs.append(f"✅ {sym}: Yahoo OK.")
             return pe_val
-        else:
-            debug_logs.append(f"⚠️ {sym}: Yahoo veriyi boş gönderdi.")
-    except Exception as e:
-        debug_logs.append(f"❌ {sym}: Yahoo hatası.")
+    except:
+        pass
 
-    # 2. FINVIZ
-    if is_bist:
-        return np.nan
-        
-    debug_logs.append(f"🔄 {sym}: Finviz yedek motoru devreye giriyor...")
-    try:
-        url = f"https://finviz.com/quote.ashx?t={sym}"
-        res = requests.get(url, headers=headers, timeout=5)
-        match_fwd = re.search(r'Forward P/E.*?<b>(.*?)</b>', res.text)
-        match_pe = re.search(r'>P/E<.*?<b>(.*?)</b>', res.text)
-        
-        if match_fwd and match_fwd.group(1) != '-':
-            pe_val = float(match_fwd.group(1))
-            debug_logs.append(f"✅ {sym}: Veri FINVIZ'den kurtarıldı ({pe_val}).")
-            return pe_val
-        elif match_pe and match_pe.group(1) != '-':
-            pe_val = float(match_pe.group(1))
-            debug_logs.append(f"✅ {sym}: Veri FINVIZ'den kurtarıldı ({pe_val}).")
-            return pe_val
-    except Exception as e:
-        debug_logs.append(f"❌ {sym}: Finviz başarısız.")
-        
+    if not is_bist: # ABD hissesiyse Finviz yedek motoru
+        try:
+            url = f"https://finviz.com/quote.ashx?t={sym}"
+            res = requests.get(url, headers=headers, timeout=5)
+            match = re.search(r'Forward P/E.*?<b>(.*?)</b>', res.text) or re.search(r'>P/E<.*?<b>(.*?)</b>', res.text)
+            if match and match.group(1) != '-':
+                pe_val = float(match.group(1))
+                debug_logs.append(f"✅ {sym}: Finviz OK.")
+                return pe_val
+        except:
+            pass
     return np.nan
 
-# --- VERİ ÇEKME VE İŞLEME ---
+# --- ANALİZ TETİKLEYİCİ ---
 if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
     debug_logs = [] 
-    
-    with st.spinner("1/2: Fiyat verileri indiriliyor (Teknik Analiz)..."):
+    with st.spinner("Veriler işleniyor..."):
         all_tickers = tickers + [bench_ticker, dxy_ticker]
         data = yf.download(all_tickers, period="4y", interval="1d")["Close"]
         data = data.ffill().dropna(subset=[bench_ticker])
         
-        p_index = data[bench_ticker]
-        p_curr = data[dxy_ticker]
-        
-        adj_bench_series = pd.Series(np.where(p_curr > 0, p_index / p_curr, p_index), index=data.index)
-        bench_rs = calc_weighted_rs(adj_bench_series)
+        p_index, p_curr = data[bench_ticker], data[dxy_ticker]
+        adj_bench = pd.Series(np.where(p_curr > 0, p_index / p_curr, p_index), index=data.index)
+        bench_rs = calc_weighted_rs(adj_bench)
         index_ret = calc_roc(p_index, 1)
 
-    with st.spinner("2/2: Temel veriler (F/K) çekiliyor..."):
-        progress_bar = st.progress(0)
-        fundamental_data = {}
-        
-        for i, sym in enumerate(tickers):
-            fundamental_data[sym] = get_pe_data(sym, debug_logs, bist_mode)
-            time.sleep(0.3) 
-            progress_bar.progress((i + 1) / len(tickers))
-        
-        progress_bar.empty()
+        fundamental_data = {sym: get_pe_data(sym, debug_logs, bist_mode) for sym in tickers}
 
-    with st.spinner("Isı Haritası Oluşturuluyor..."):
         results = []
         valid_pes = [v for v in fundamental_data.values() if not np.isnan(v)]
-        avg_basket_pe = np.median(valid_pes) if valid_pes else 10.0
+        avg_basket_pe = np.median(valid_pes) if valid_pes else 15.0
         
         for sym in tickers:
-            if sym not in data.columns or data[sym].isnull().all():
-                continue
-                
+            if sym not in data.columns: continue
             p_close = data[sym]
             stock_rs = calc_weighted_rs(p_close)
-            
             diff = (stock_rs - bench_rs).tail(lookback)
-            navy_area = diff[diff > 0].sum()
-            fuchsia_area = abs(diff[diff <= 0].sum())
-            rs_ratio = navy_area / (0.0001 if fuchsia_area == 0 else fuchsia_area)
+            rs_ratio = diff[diff > 0].sum() / (0.0001 if abs(diff[diff <= 0].sum()) == 0 else abs(diff[diff <= 0].sum()))
             
-            stock_ret = calc_roc(p_close, 1).tail(252)
-            index_ret_252 = index_ret.tail(252)
-            corr = stock_ret.corr(index_ret_252)
-            
-            beta = (corr * (stock_ret.std() / index_ret_252.std())) if index_ret_252.std() > 0 else 1.0
-            beta_adj_score = rs_ratio / (0.1 if beta <= 0.1 else beta)
-            ideal_score = (rs_ratio + beta_adj_score) / 2.0
+            stock_ret, index_ret_252 = calc_roc(p_close, 1).tail(252), index_ret.tail(252)
+            beta = (stock_ret.corr(index_ret_252) * (stock_ret.std() / index_ret_252.std())) if index_ret_252.std() > 0 else 1.0
+            beta_adj = rs_ratio / (0.1 if beta <= 0.1 else beta)
             
             pe_val = fundamental_data.get(sym, np.nan)
-            cheapness_ratio = pe_val / avg_basket_pe if not np.isnan(pe_val) else np.nan
-            
-            display_sym = sym.replace(".IS", "") if bist_mode else sym
-            
             results.append({
-                "Hisse": display_sym,
+                "Hisse": sym.replace(".IS", "") if bist_mode else sym,
                 "Saf Oran (P/N)": round(rs_ratio, 2),
-                "Beta Skor": round(beta_adj_score, 2),
-                "İdealite": round(ideal_score, 2),
+                "Beta Skor": round(beta_adj, 2),
+                "İdealite": round((rs_ratio + beta_adj) / 2.0, 2),
                 "F/K Değeri": round(pe_val, 2) if not np.isnan(pe_val) else np.nan,
-                "Ucuzluk Skoru (x)": cheapness_ratio
+                "Ucuzluk Skoru (x)": pe_val / avg_basket_pe if not np.isnan(pe_val) else np.nan
             })
 
         if results:
-            df_results = pd.DataFrame(results)
-            st.markdown(f"**Sepet Medyan F/K:** `{round(avg_basket_pe, 2)}` *(Referans değer)*")
+            df = pd.DataFrame(results).sort_values(by="İdealite", ascending=False).reset_index(drop=True)
+            st.markdown(f"**Sepet Medyan F/K:** `{round(avg_basket_pe, 2)}`")
             
-            df_sorted = df_results.sort_values(by="İdealite", ascending=False).reset_index(drop=True)
+            # --- TABLO ŞEKİLLENDİRME ---
+            styled_df = df.style.background_gradient(cmap='RdYlGn_r', subset=['Ucuzluk Skoru (x)'], vmin=0.5, vmax=2.0)\
+                .format({"Ucuzluk Skoru (x)": "{:.2f}", "F/K Değeri": "{:.2f}"}, na_rep="Veri Yok")\
+                .set_properties(**{'text-align': 'left'})\
+                .set_table_styles([{'selector': 'th', 'props': [('text-align', 'left')]}])
             
-           styled_df = df_sorted.style.background_gradient(
-                cmap='RdYlGn_r', 
-                subset=['Ucuzluk Skoru (x)'], 
-                vmin=0.5, 
-                vmax=2.0  
-            ).format({
-                "Ucuzluk Skoru (x)": "{:.2f}",
-                "F/K Değeri": "{:.2f}"
-            }, na_rep="Veri Yok").set_properties(**{'text-align': 'left'}).set_table_styles([
-                {'selector': 'th', 'props': [('text-align', 'left')]} # Başlıkları da sola yaslar
-            ])
-            
-            # use_container_width=False yaparak hücrelerin içeriği kadar yer kaplamasını sağlıyoruz
             st.dataframe(styled_df, use_container_width=False, height=600)
-            
-            st.markdown("---")
-            with st.expander("🛠️ Hata Ayıklama Konsolu (Tıkla Aç)"):
-                for log in debug_logs:
-                    if "✅" in log:
-                        st.success(log)
-                    elif "⚠️" in log or "🔄" in log:
-                        st.warning(log)
-                    else:
-                        st.error(log)
-        else:
-            st.error("Veri işlenemedi. Lütfen sembolleri kontrol edin.")
