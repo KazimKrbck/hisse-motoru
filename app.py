@@ -2,11 +2,12 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
+import time
 
 # --- SAYFA AYARLARI ---
 st.set_page_config(page_title="Hisse Sıralama Motoru", layout="wide")
 st.title("🔥 İdealite ve F/K Isı Haritası")
-st.markdown("Likidite ayarlı teknik metrikler ve normalize edilmiş İleriye Dönük F/K haritası.")
+st.markdown("Likidite ayarlı teknik metrikler ve normalize edilmiş F/K haritası.")
 
 # --- GİRDİLER ---
 st.sidebar.header("Parametreler")
@@ -33,8 +34,10 @@ def calc_weighted_rs(series):
 
 # --- VERİ ÇEKME VE İŞLEME ---
 if st.sidebar.button("Analizi Başlat"):
-  with st.spinner("1/2: Fiyat verileri indiriliyor (Geçmiş 4 Yıl)..."):
+    with st.spinner("1/2: Fiyat verileri indiriliyor (Geçmiş 4 Yıl)..."):
         all_tickers = tickers + [bench_ticker, dxy_ticker]
+        
+        # TradingView mantığı: Sadece "Close" kullan ve tatil boşluklarını doldur
         data = yf.download(all_tickers, period="4y", interval="1d")["Close"]
         data = data.ffill().dropna(subset=[bench_ticker])
         
@@ -45,21 +48,26 @@ if st.sidebar.button("Analizi Başlat"):
         bench_rs = calc_weighted_rs(adj_bench_series)
         index_ret = calc_roc(p_index, 1)
 
-    with st.spinner("2/2: Temel veriler (F/K) çekiliyor... (Hisse sayısına göre 1-2 dk sürebilir)"):
+    with st.spinner("2/2: Temel veriler (F/K) çekiliyor... (Lütfen bekleyin)"):
         progress_bar = st.progress(0)
         fundamental_data = {}
         
         for i, sym in enumerate(tickers):
             try:
                 info = yf.Ticker(sym).info
-                fwd_pe = info.get('forwardPE', np.nan)
-                # Negatif F/K (Zarar eden şirket) veya aşırı F/K'ları temizle
-                if fwd_pe is not None and fwd_pe > 0:
-                    fundamental_data[sym] = fwd_pe
+                # 1. Önce İleriye Dönük F/K dene, yoksa Geçmiş F/K al (B Planı)
+                pe_val = info.get('forwardPE', info.get('trailingPE', np.nan))
+                
+                # Negatif F/K (Zarar eden şirket) temizle
+                if pe_val is not None and pe_val > 0:
+                    fundamental_data[sym] = pe_val
                 else:
                     fundamental_data[sym] = np.nan
             except:
                 fundamental_data[sym] = np.nan
+                
+            # Yahoo bizi bot sanmasın diye yarım saniye mola
+            time.sleep(0.5) 
             progress_bar.progress((i + 1) / len(tickers))
         
         progress_bar.empty()
@@ -67,9 +75,9 @@ if st.sidebar.button("Analizi Başlat"):
     with st.spinner("Isı Haritası Oluşturuluyor..."):
         results = []
         
-        # Sepet F/K Ortalamasını Hesapla (Aşırı uçların ortalamayı bozmasını engellemek için Medyan kullanıyoruz)
+        # Sepet F/K Ortalamasını Hesapla
         valid_pes = [v for v in fundamental_data.values() if not np.isnan(v)]
-        avg_basket_pe = np.median(valid_pes) if valid_pes else 15.0 # Varsayılan 15
+        avg_basket_pe = np.median(valid_pes) if valid_pes else 15.0
         
         for sym in tickers:
             if sym not in data.columns or data[sym].isnull().all():
@@ -91,17 +99,17 @@ if st.sidebar.button("Analizi Başlat"):
             beta_adj_score = rs_ratio / (0.1 if beta <= 0.1 else beta)
             ideal_score = (rs_ratio + beta_adj_score) / 2.0
             
-            fwd_pe = fundamental_data.get(sym, np.nan)
+            pe_val = fundamental_data.get(sym, np.nan)
             
             # Ucuzluk Oranı = Hisse F/K'sı / Sepet Medyan F/K'sı
-            cheapness_ratio = fwd_pe / avg_basket_pe if not np.isnan(fwd_pe) else np.nan
+            cheapness_ratio = pe_val / avg_basket_pe if not np.isnan(pe_val) else np.nan
             
             results.append({
                 "Hisse": sym,
                 "Saf Oran (P/N)": round(rs_ratio, 2),
                 "Beta Skor": round(beta_adj_score, 2),
                 "İdealite": round(ideal_score, 2),
-                "İleriye Dönük F/K": round(fwd_pe, 2) if not np.isnan(fwd_pe) else None,
+                "F/K Değeri": round(pe_val, 2) if not np.isnan(pe_val) else np.nan,
                 "Ucuzluk Skoru (x)": cheapness_ratio
             })
 
@@ -111,9 +119,6 @@ if st.sidebar.button("Analizi Başlat"):
             
             df_sorted = df_results.sort_values(by="İdealite", ascending=False).reset_index(drop=True)
             
-            # ISI HARİTASI (KIRPMA İŞLEMİ UYGULANMIŞTIR)
-            # vmin=0.5 (Ortalamanın %50 altı MAKSİMUM YEŞİL)
-            # vmax=2.0 (Ortalamanın 2 katı ve üstü MAKSİMUM KIRMIZI)
             styled_df = df_sorted.style.background_gradient(
                 cmap='RdYlGn_r', 
                 subset=['Ucuzluk Skoru (x)'], 
@@ -121,7 +126,7 @@ if st.sidebar.button("Analizi Başlat"):
                 vmax=2.0  
             ).format({
                 "Ucuzluk Skoru (x)": "{:.2f}",
-                "İleriye Dönük F/K": "{:.2f}"
+                "F/K Değeri": "{:.2f}"
             }, na_rep="Veri Yok")
             
             st.dataframe(styled_df, use_container_width=True, height=600)
