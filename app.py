@@ -35,7 +35,13 @@ def calc_weighted_rs(series):
 if st.sidebar.button("Analizi Başlat"):
     with st.spinner("1/2: Fiyat verileri indiriliyor (Geçmiş 4 Yıl)..."):
         all_tickers = tickers + [bench_ticker, dxy_ticker]
-        data = yf.download(all_tickers, period="4y", interval="1d")["Close"]
+        
+        # Değişiklik 1: 'Close' yerine temettüleri de hesaba katan 'Adj Close' kullanıyoruz.
+        data = yf.download(all_tickers, period="4y", interval="1d")["Adj Close"]
+        
+        # Değişiklik 2: Tatil günlerinden kaynaklı 'NaN' (boşluk) sorununu, tıpkı TradingView gibi 
+        # bir önceki günün kapanış fiyatıyla ileri doğru doldurarak (ffill) çözüyoruz.
+        data = data.ffill().dropna(subset=[bench_ticker])
         
         p_index = data[bench_ticker]
         p_curr = data[dxy_ticker]
