@@ -1,9 +1,8 @@
 import streamlit as st
 import yfinance as yf
+from yahooquery import Ticker as YQTicker
 import pandas as pd
 import numpy as np
-import time
-import requests
 
 # --- SAYFA AYARLARI ---
 st.set_page_config(page_title="Hisse Sıralama Motoru", layout="wide")
@@ -35,10 +34,9 @@ def calc_weighted_rs(series):
 
 # --- VERİ ÇEKME VE İŞLEME ---
 if st.sidebar.button("Analizi Başlat"):
-    with st.spinner("1/2: Fiyat verileri indiriliyor (Geçmiş 4 Yıl)..."):
+    with st.spinner("1/2: Fiyat verileri indiriliyor (Teknik Analiz)..."):
         all_tickers = tickers + [bench_ticker, dxy_ticker]
         
-        # TradingView mantığı: Sadece "Close" kullan ve tatil boşluklarını doldur
         data = yf.download(all_tickers, period="4y", interval="1d")["Close"]
         data = data.ffill().dropna(subset=[bench_ticker])
         
@@ -49,43 +47,36 @@ if st.sidebar.button("Analizi Başlat"):
         bench_rs = calc_weighted_rs(adj_bench_series)
         index_ret = calc_roc(p_index, 1)
 
-    with st.spinner("2/2: Temel veriler (F/K) çekiliyor... (Lütfen bekleyin)"):
-        progress_bar = st.progress(0)
+    with st.spinner("2/2: Temel veriler (F/K) yahooquery ile tek seferde çekiliyor..."):
         fundamental_data = {}
-        
-        # Bot korumasını aşmak için kılık değiştiriyoruz (Sahte Chrome Tarayıcı Kimliği)
-        session = requests.Session()
-        session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
-        })
-        
-        for i, sym in enumerate(tickers):
-            try:
-                # Yahoo'ya bağlanırken bu sahte kimliği (session) kullanıyoruz
-                ticker_obj = yf.Ticker(sym, session=session)
-                info = ticker_obj.info
-                
-                # 1. Önce İleriye Dönük F/K dene, yoksa Geçmiş F/K al (B Planı)
-                pe_val = info.get('forwardPE', info.get('trailingPE', np.nan))
-                
-                # Negatif F/K (Zarar eden şirket) temizle
-                if pe_val is not None and pe_val > 0:
-                    fundamental_data[sym] = pe_val
-                else:
+        try:
+            # YENİ MOTOR: Tüm hisseleri tek bir pakette Yahoo'ya soruyoruz (Bot korumasına takılmaz, saniyeler sürer)
+            yq_tickers = YQTicker(tickers)
+            details = yq_tickers.summary_detail
+            
+            for sym in tickers:
+                try:
+                    if isinstance(details, dict) and sym in details:
+                        sym_data = details[sym]
+                        if isinstance(sym_data, dict):
+                            # Önce İleriye Dönük (forwardPE), yoksa Geçmiş (trailingPE) F/K
+                            pe_val = sym_data.get('forwardPE', sym_data.get('trailingPE', np.nan))
+                            if pe_val is not None and pe_val > 0:
+                                fundamental_data[sym] = pe_val
+                            else:
+                                fundamental_data[sym] = np.nan
+                        else:
+                            fundamental_data[sym] = np.nan
+                    else:
+                        fundamental_data[sym] = np.nan
+                except:
                     fundamental_data[sym] = np.nan
-            except:
-                fundamental_data[sym] = np.nan
-                
-            # Yahoo bizi bot sanmasın diye yarım saniye mola
-            time.sleep(0.5) 
-            progress_bar.progress((i + 1) / len(tickers))
-        
-        progress_bar.empty()
+        except Exception as e:
+            st.error("Yahoo F/K verilerini vermeyi reddetti.")
 
     with st.spinner("Isı Haritası Oluşturuluyor..."):
         results = []
         
-        # Sepet F/K Ortalamasını Hesapla
         valid_pes = [v for v in fundamental_data.values() if not np.isnan(v)]
         avg_basket_pe = np.median(valid_pes) if valid_pes else 15.0
         
@@ -111,7 +102,6 @@ if st.sidebar.button("Analizi Başlat"):
             
             pe_val = fundamental_data.get(sym, np.nan)
             
-            # Ucuzluk Oranı = Hisse F/K'sı / Sepet Medyan F/K'sı
             cheapness_ratio = pe_val / avg_basket_pe if not np.isnan(pe_val) else np.nan
             
             results.append({
