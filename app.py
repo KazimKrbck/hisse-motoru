@@ -8,17 +8,37 @@ import re
 
 # --- SAYFA AYARLARI ---
 st.set_page_config(page_title="Hisse Sıralama Motoru", layout="wide")
-st.title("🔥 İdealite ve F/K Isı Haritası")
+st.title("🔥 İdealite ve F/K Isı Haritası (Global & BIST)")
 st.markdown("Likidite ayarlı teknik metrikler ve normalize edilmiş F/K haritası.")
 
 # --- GİRDİLER ---
 st.sidebar.header("Parametreler")
-tickers_input = st.sidebar.text_area("Hisse Sembolleri (Virgülle ayırın, Maks 100)", "AAPL, MSFT, GOOGL, AMZN, NVDA, META, TSLA, INTC, AMD, NFLX")
-bench_ticker = st.sidebar.text_input("Piyasa Endeksi", "^GSPC")
-dxy_ticker = st.sidebar.text_input("Kur/Likidite (DXY)", "DX-Y.NYB")
+
+bist_mode = st.sidebar.checkbox("🇹🇷 Borsa İstanbul (BIST) Modu", value=False, help="Türk hisseleri için otomatik .IS uzantısı ekler ve yedek motoru ayarlar.")
+
+if bist_mode:
+    default_tickers = "THYAO, TUPRS, KCHOL, AKBNK, ISCTR, EREGL, FROTO, SISE, BIMAS, ASELS"
+    default_bench = "XU100.IS"
+    default_dxy = "TRY=X" # Türk hisselerini Dolar kuruna göre düzeltmek istersen TRY=X kullanabilirsin, istemezsen DX-Y.NYB kalabilir.
+else:
+    default_tickers = "AAPL, MSFT, GOOGL, AMZN, NVDA, META, TSLA, INTC, AMD, NFLX"
+    default_bench = "^GSPC"
+    default_dxy = "DX-Y.NYB"
+
+tickers_input = st.sidebar.text_area("Hisse Sembolleri (Virgülle ayırın, Maks 100)", default_tickers)
+bench_ticker = st.sidebar.text_input("Piyasa Endeksi", default_bench)
+dxy_ticker = st.sidebar.text_input("Kur/Likidite (DXY)", default_dxy)
 lookback = st.sidebar.number_input("Alan Oranı Geriye Bakış (Gün)", value=500)
 
-tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
+# Sembolleri temizle ve BIST modu açıksa .IS ekle
+raw_tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
+tickers = []
+for t in raw_tickers:
+    if bist_mode and not t.endswith(".IS"):
+        tickers.append(t + ".IS")
+    else:
+        tickers.append(t)
+
 if len(tickers) > 100:
     st.sidebar.warning("100'den fazla hisse girdiniz. Performans için sadece ilk 100 hisse işlenecek.")
     tickers = tickers[:100]
@@ -33,52 +53,62 @@ def calc_weighted_rs(series):
             0.2 * calc_roc(series, 189) +
             0.2 * calc_roc(series, 252))
 
-# FİNANSAL VERİ KAZIMA (SCRAPING) MOTORU
-def get_pe_data(sym, debug_logs):
-    """Önce Yahoo'yu dener, başarısız olursa Finviz'den kazır."""
+def get_pe_data(sym, debug_logs, is_bist):
+    """Yahoo'dan veriyi çeker, ABD hissesiyse Finviz yedek motorunu kullanır."""
     pe_val = np.nan
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     
     # 1. DENEME: YFINANCE (Yahoo)
     try:
-        info = yf.Ticker(sym).info
-        pe_val = info.get('forwardPE', info.get('trailingPE', np.nan))
+        session = requests.Session()
+        session.headers.update(headers)
+        info = yf.Ticker(sym, session=session).info
+        
+        # BIST için Trailing PE (Geçmiş F/K) daha yaygındır, onu önceliklendiriyoruz
+        if is_bist:
+            pe_val = info.get('trailingPE', info.get('forwardPE', np.nan))
+        else:
+            pe_val = info.get('forwardPE', info.get('trailingPE', np.nan))
+            
         if pd.notna(pe_val) and pe_val > 0:
-            debug_logs.append(f"✅ {sym}: Veri Yahoo'dan başarıyla çekildi ({pe_val}).")
+            debug_logs.append(f"✅ {sym}: Veri Yahoo'dan çekildi ({pe_val:.2f}).")
             return pe_val
         else:
-            debug_logs.append(f"⚠️ {sym}: Yahoo veriyi boş (None) veya negatif gönderdi.")
+            debug_logs.append(f"⚠️ {sym}: Yahoo veriyi boş gönderdi.")
     except Exception as e:
-        debug_logs.append(f"❌ {sym}: Yahoo bağlantı hatası -> {str(e)[:50]}")
+        debug_logs.append(f"❌ {sym}: Yahoo hatası.")
 
-    # 2. DENEME: FINVIZ (Yedek Motor)
+    # 2. DENEME: FINVIZ (SADECE ABD HİSSELERİ İÇİN)
+    if is_bist:
+        debug_logs.append(f"⚠️ {sym}: BIST Modu açık olduğu için Finviz kullanılamaz.")
+        return np.nan
+        
     debug_logs.append(f"🔄 {sym}: Finviz yedek motoru devreye giriyor...")
     try:
         url = f"https://finviz.com/quote.ashx?t={sym}"
         res = requests.get(url, headers=headers, timeout=5)
         
-        # Sitenin kaynak kodundan F/K satırını bulma
         match_fwd = re.search(r'Forward P/E.*?<b>(.*?)</b>', res.text)
         match_pe = re.search(r'>P/E<.*?<b>(.*?)</b>', res.text)
         
         if match_fwd and match_fwd.group(1) != '-':
             pe_val = float(match_fwd.group(1))
-            debug_logs.append(f"✅ {sym}: Veri FINVIZ'den (Forward P/E) kurtarıldı ({pe_val}).")
+            debug_logs.append(f"✅ {sym}: Veri FINVIZ'den kurtarıldı ({pe_val}).")
             return pe_val
         elif match_pe and match_pe.group(1) != '-':
             pe_val = float(match_pe.group(1))
-            debug_logs.append(f"✅ {sym}: Veri FINVIZ'den (Standart P/E) kurtarıldı ({pe_val}).")
+            debug_logs.append(f"✅ {sym}: Veri FINVIZ'den kurtarıldı ({pe_val}).")
             return pe_val
         else:
-            debug_logs.append(f"❌ {sym}: Finviz'de de F/K verisi bulunamadı (Şirket zararda olabilir).")
+            debug_logs.append(f"❌ {sym}: Finviz'de de veri bulunamadı.")
     except Exception as e:
-        debug_logs.append(f"❌ {sym}: Finviz motoru da başarısız oldu -> {str(e)[:50]}")
+        debug_logs.append(f"❌ {sym}: Finviz başarısız.")
         
     return np.nan
 
 # --- VERİ ÇEKME VE İŞLEME ---
 if st.sidebar.button("Analizi Başlat"):
-    debug_logs = [] # Hata kayıtlarını tutacağımız liste
+    debug_logs = [] 
     
     with st.spinner("1/2: Fiyat verileri indiriliyor (Teknik Analiz)..."):
         all_tickers = tickers + [bench_ticker, dxy_ticker]
@@ -87,20 +117,20 @@ if st.sidebar.button("Analizi Başlat"):
         
         p_index = data[bench_ticker]
         p_curr = data[dxy_ticker]
+        
+        # Likidite Düzeltmesi
         adj_bench_series = pd.Series(np.where(p_curr > 0, p_index / p_curr, p_index), index=data.index)
         
         bench_rs = calc_weighted_rs(adj_bench_series)
         index_ret = calc_roc(p_index, 1)
 
-    with st.spinner("2/2: Temel veriler Çift Motorlu Sistemle (Yahoo + Finviz) çekiliyor..."):
+    with st.spinner("2/2: Temel veriler (F/K) çekiliyor..."):
         progress_bar = st.progress(0)
         fundamental_data = {}
         
         for i, sym in enumerate(tickers):
-            # Çift motorlu fonksiyonumuzu çağırıyoruz
-            fundamental_data[sym] = get_pe_data(sym, debug_logs)
-            
-            time.sleep(0.3) # Sunucuları yormamak için kısa bekleme
+            fundamental_data[sym] = get_pe_data(sym, debug_logs, bist_mode)
+            time.sleep(0.3) 
             progress_bar.progress((i + 1) / len(tickers))
         
         progress_bar.empty()
@@ -108,7 +138,7 @@ if st.sidebar.button("Analizi Başlat"):
     with st.spinner("Isı Haritası Oluşturuluyor..."):
         results = []
         valid_pes = [v for v in fundamental_data.values() if not np.isnan(v)]
-        avg_basket_pe = np.median(valid_pes) if valid_pes else 15.0
+        avg_basket_pe = np.median(valid_pes) if valid_pes else 10.0 # BIST için ortalama F/K genelde daha düşüktür
         
         for sym in tickers:
             if sym not in data.columns or data[sym].isnull().all():
@@ -133,8 +163,11 @@ if st.sidebar.button("Analizi Başlat"):
             pe_val = fundamental_data.get(sym, np.nan)
             cheapness_ratio = pe_val / avg_basket_pe if not np.isnan(pe_val) else np.nan
             
+            # Tabloda temiz görünmesi için .IS takısını kaldıralım
+            display_sym = sym.replace(".IS", "") if bist_mode else sym
+            
             results.append({
-                "Hisse": sym,
+                "Hisse": display_sym,
                 "Saf Oran (P/N)": round(rs_ratio, 2),
                 "Beta Skor": round(beta_adj_score, 2),
                 "İdealite": round(ideal_score, 2),
@@ -160,10 +193,8 @@ if st.sidebar.button("Analizi Başlat"):
             
             st.dataframe(styled_df, use_container_width=True, height=600)
             
-            # --- DEBUG (HATA AYIKLAMA) BÖLÜMÜ ---
             st.markdown("---")
-            with st.expander("🛠️ Hata Ayıklama (Debug) Konsolu - F/K Neden 'None' Çıkıyor? (Tıkla Aç)"):
-                st.write("Aşağıda sistemin arka planda Yahoo ve Finviz sunucularıyla yaptığı konuşmalar yer almaktadır:")
+            with st.expander("🛠️ Hata Ayıklama Konsolu (Tıkla Aç)"):
                 for log in debug_logs:
                     if "✅" in log:
                         st.success(log)
@@ -171,6 +202,5 @@ if st.sidebar.button("Analizi Başlat"):
                         st.warning(log)
                     else:
                         st.error(log)
-                        
         else:
             st.error("Veri işlenemedi. Lütfen sembolleri kontrol edin.")
