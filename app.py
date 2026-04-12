@@ -30,7 +30,14 @@ else:
 # --- GEMINI GÖRÜNTÜ OKUMA BÖLÜMÜ ---
 st.sidebar.markdown("---")
 st.sidebar.subheader("🤖 Resimden Hisse Çıkarma")
-gemini_api_key = st.sidebar.text_input("Gemini API Anahtarı (Zorunlu)", type="password", help="aistudio.google.com adresinden ücretsiz alabilirsiniz.")
+
+# Şifreyi Streamlit kasasından al, yoksa kutu göster
+if "GEMINI_API_KEY" in st.secrets:
+    gemini_api_key = st.secrets["GEMINI_API_KEY"]
+    st.sidebar.success("🔑 Gemini API Anahtarı gizli kasadan güvenle yüklendi!")
+else:
+    gemini_api_key = st.sidebar.text_input("Gemini API Anahtarı (Zorunlu)", type="password", help="aistudio.google.com adresinden ücretsiz alabilirsiniz.")
+
 uploaded_file = st.sidebar.file_uploader("Hisse Listesi Resmi Yükle", type=["png", "jpg", "jpeg"])
 
 # Otomatik doldurma için hafıza (Session State) ayarı
@@ -62,7 +69,7 @@ if uploaded_file is not None and gemini_api_key:
 
 st.sidebar.markdown("---")
 
-# Hisselerin girildiği ana kutu (Gemini doldurursa otomatik güncellenir)
+# Hisselerin girildiği ana kutu
 tickers_input = st.sidebar.text_area("Hisse Sembolleri (Virgülle ayırın, Maks 100)", st.session_state.current_tickers, height=150)
 
 bench_ticker = st.sidebar.text_input("Piyasa Endeksi", default_bench)
