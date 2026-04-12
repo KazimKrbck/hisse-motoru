@@ -10,7 +10,7 @@ from PIL import Image
 
 # --- SAYFA AYARLARI ---
 st.set_page_config(page_title="Hisse Sıralama Motoru", layout="wide")
-st.title("Hisseler için RsRank bazlı İdealite ve Ortalama Fiyat/Kazanç bzlı Ucuzluk Isı Haritası       /KazimKrbck")
+st.title("Hisseler için RsRank bazlı İdealite ve Ortalama Fiyat/Kazanç bzlı Ucuzluk Isı Haritası       [KazimKrbck]")
 st.markdown("Likidite ayarlı teknik metrikler, normalize edilmiş F/K haritası ve **Gemini Görüntü Okuma** sistemi.")
 
 # --- GİRDİLER VE GEMINI YAPAY ZEKA ---
