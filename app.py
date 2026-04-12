@@ -218,7 +218,7 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
             
             df_sorted = df_results.sort_values(by="İdealite", ascending=False).reset_index(drop=True)
             
-            styled_df = df_sorted.style.background_gradient(
+           styled_df = df_sorted.style.background_gradient(
                 cmap='RdYlGn_r', 
                 subset=['Ucuzluk Skoru (x)'], 
                 vmin=0.5, 
@@ -226,9 +226,12 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
             ).format({
                 "Ucuzluk Skoru (x)": "{:.2f}",
                 "F/K Değeri": "{:.2f}"
-            }, na_rep="Veri Yok")
+            }, na_rep="Veri Yok").set_properties(**{'text-align': 'left'}).set_table_styles([
+                {'selector': 'th', 'props': [('text-align', 'left')]} # Başlıkları da sola yaslar
+            ])
             
-            st.dataframe(styled_df, use_container_width=True, height=600)
+            # use_container_width=False yaparak hücrelerin içeriği kadar yer kaplamasını sağlıyoruz
+            st.dataframe(styled_df, use_container_width=False, height=600)
             
             st.markdown("---")
             with st.expander("🛠️ Hata Ayıklama Konsolu (Tıkla Aç)"):
