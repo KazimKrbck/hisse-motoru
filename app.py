@@ -3,6 +3,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import time
+import requests
 
 # --- SAYFA AYARLARI ---
 st.set_page_config(page_title="Hisse Sıralama Motoru", layout="wide")
@@ -52,9 +53,18 @@ if st.sidebar.button("Analizi Başlat"):
         progress_bar = st.progress(0)
         fundamental_data = {}
         
+        # Bot korumasını aşmak için kılık değiştiriyoruz (Sahte Chrome Tarayıcı Kimliği)
+        session = requests.Session()
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+        })
+        
         for i, sym in enumerate(tickers):
             try:
-                info = yf.Ticker(sym).info
+                # Yahoo'ya bağlanırken bu sahte kimliği (session) kullanıyoruz
+                ticker_obj = yf.Ticker(sym, session=session)
+                info = ticker_obj.info
+                
                 # 1. Önce İleriye Dönük F/K dene, yoksa Geçmiş F/K al (B Planı)
                 pe_val = info.get('forwardPE', info.get('trailingPE', np.nan))
                 
