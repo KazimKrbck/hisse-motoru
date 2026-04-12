@@ -10,7 +10,7 @@ from PIL import Image
 
 # --- SAYFA AYARLARI ---
 st.set_page_config(page_title="Hisse Sıralama Motoru", layout="wide")
-st.title("🔥 İdealite ve F/K Isı Haritası (Yapay Zeka Destekli)")
+st.title("Hisseler için Yapay Zeka Destekli İdealite ve F/K Isı Haritası  /KazimKrbck")
 st.markdown("Likidite ayarlı teknik metrikler, normalize edilmiş F/K haritası ve **Gemini Görüntü Okuma** sistemi.")
 
 # --- GİRDİLER VE GEMINI YAPAY ZEKA ---
