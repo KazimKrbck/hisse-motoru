@@ -2,6 +2,7 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
+import time
 import requests
 import re
 import google.generativeai as genai
@@ -13,9 +14,8 @@ st.set_page_config(page_title="Hisse Sıralama Motoru", layout="wide")
 st.title("Hisse RsRank bazlı İdealite ve Ortalama F/K bazlı Ucuzluk Isı Haritası [KazimKrbck]")
 st.markdown("Likidite ayarlı teknik metrikler, normalize edilmiş F/K haritası ve **Gemini Görüntü Okuma** sistemi.")
 
-# --- GİRDİLER VE PARAMETRELER ---
+# --- PARAMETRELER VE KONTROL PANELİ ---
 st.sidebar.header("Parametreler")
-
 bist_mode = st.sidebar.checkbox("🇹🇷 Borsa İstanbul (BIST) Modu", value=False)
 
 if bist_mode:
@@ -27,7 +27,6 @@ else:
     default_bench = "^GSPC"
     default_dxy = "DX-Y.NYB"
 
-# --- SEKTÖREL GÜVENLİK FİLTRESİ ---
 st.sidebar.markdown("---")
 st.sidebar.subheader("🛡️ Sektör Filtreleri")
 exclude_finance = st.sidebar.checkbox("Banka, Finans, Kripto ve Kumar Hariç Tut", value=True)
@@ -35,10 +34,9 @@ exclude_finance = st.sidebar.checkbox("Banka, Finans, Kripto ve Kumar Hariç Tut
 # --- GEMINI GÖRÜNTÜ OKUMA ---
 st.sidebar.markdown("---")
 st.sidebar.subheader("🤖 Resimden Hisse Çıkarma")
-
 if "GEMINI_API_KEY" in st.secrets:
     gemini_api_key = st.secrets["GEMINI_API_KEY"]
-    st.sidebar.success("🔑 Gemini API Anahtarı yüklendi!")
+    st.sidebar.success("🔑 Gemini API Anahtarı kasadan yüklendi.")
 else:
     gemini_api_key = st.sidebar.text_input("Gemini API Anahtarı", type="password")
 
@@ -54,7 +52,7 @@ if uploaded_file is not None and gemini_api_key:
                 genai.configure(api_key=gemini_api_key)
                 model = genai.GenerativeModel('gemini-2.5-flash')
                 img = Image.open(uploaded_file)
-                prompt = "Resimdeki hisse tickerlarını bul. SADECE büyük harflerle, virgülle ayrılmış liste ver. Örn: AAPL, MSFT"
+                prompt = "Resimdeki tickerları bul. SADECE büyük harflerle, virgülle ayrılmış liste ver. Örn: AAPL, MSFT"
                 response = model.generate_content([prompt, img])
                 st.session_state.current_tickers = response.text.strip()
                 st.sidebar.success("Hisseler çekildi!")
@@ -67,11 +65,10 @@ bench_ticker = st.sidebar.text_input("Piyasa Endeksi", default_bench)
 dxy_ticker = st.sidebar.text_input("Kur/Likidite (DXY)", default_dxy)
 lookback = st.sidebar.number_input("LookBack (Gün)", value=500)
 
-# Sembol Hazırlama
 raw_tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
 tickers = [t + ".IS" if bist_mode and not t.endswith(".IS") else t for t in raw_tickers][:100]
 
-# --- ÖNBELLEKLEME (CACHE) SİSTEMİ ---
+# --- FONKSİYONLAR VE CACHE SİSTEMİ ---
 def calc_roc(series, periods):
     return series.pct_change(periods=periods) * 100
 
@@ -79,51 +76,80 @@ def calc_weighted_rs(series):
     return (0.4 * calc_roc(series, 63) + 0.2 * calc_roc(series, 126) + 
             0.2 * calc_roc(series, 189) + 0.2 * calc_roc(series, 252))
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=3600, max_entries=2, show_spinner=False)
 def fetch_price_data(all_ticks):
     return yf.download(all_ticks, period="4y", interval="1d", progress=False)["Close"]
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=86400, max_entries=150, show_spinner=False)
 def fetch_fundamental_data(sym, is_bist):
     pe_val, sector = np.nan, "Bilinmiyor"
+    # 1. Yahoo
     try:
         t_obj = yf.Ticker(sym)
         info = t_obj.info
         sector = info.get('sector', info.get('industry', 'Bilinmiyor'))
         pe_val = info.get('trailingPE' if is_bist else 'forwardPE', info.get('forwardPE' if is_bist else 'trailingPE', np.nan))
         if pd.notna(pe_val) and (pe_val <= 0 or pe_val > 500): pe_val = np.nan
-        if pd.notna(pe_val): return pe_val, sector, f"✅ {sym}: Yahoo OK", "success"
+        if pd.notna(pe_val) and sector != "Bilinmiyor":
+            return pe_val, sector, f"✅ {sym}: Yahoo OK", "success"
     except: pass
+    
+    # 2. Finviz (Sadece US için kurtarıcı)
+    if not is_bist:
+        try:
+            headers = {"User-Agent": "Mozilla/5.0"}
+            url = f"https://finviz.com/quote.ashx?t={sym}"
+            res = requests.get(url, headers=headers, timeout=5)
+            if sector == "Bilinmiyor":
+                m_sec = re.search(r'f=sec_[^>]+>([^<]+)</a>', res.text)
+                if m_sec: sector = m_sec.group(1)
+            if np.isnan(pe_val):
+                m_fwd = re.search(r'Forward P/E.*?<b>(.*?)</b>', res.text)
+                m_pe = re.search(r'>P/E<.*?<b>(.*?)</b>', res.text)
+                temp = np.nan
+                if m_fwd and m_fwd.group(1) != '-': temp = float(m_fwd.group(1))
+                elif m_pe and m_pe.group(1) != '-': temp = float(m_pe.group(1))
+                if 0 < temp <= 500: pe_val = temp
+            if sector != "Bilinmiyor" or pd.notna(pe_val):
+                return pe_val, sector, f"🔄 {sym}: Finviz Kurtardı", "success"
+        except: pass
+    
     return pe_val, sector, f"❌ {sym}: Veri Yok", "error"
 
 # --- ANALİZ MOTORU ---
 if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
     debug_logs = []
     
-    with st.spinner("Veriler işleniyor..."):
-        data = fetch_price_data(tickers + [bench_ticker, dxy_ticker]).ffill().dropna(subset=[bench_ticker])
+    with st.spinner("Veriler indiriliyor..."):
+        all_to_fetch = tickers + [bench_ticker, dxy_ticker]
+        data = fetch_price_data(all_to_fetch).ffill().dropna(subset=[bench_ticker])
         p_index, p_curr = data[bench_ticker], data[dxy_ticker]
         adj_bench = pd.Series(np.where(p_curr > 0, p_index / p_curr, p_index), index=data.index)
         bench_rs = calc_weighted_rs(adj_bench)
-        
+        idx_ret = p_index.pct_change()
+
         fundamental_data = {}
         for sym in tickers:
             pe, sec, msg, tp = fetch_fundamental_data(sym, bist_mode)
             fundamental_data[sym] = {"pe": pe, "sector": sec}
             debug_logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
+            time.sleep(0.1) # RAM ve API Koruması
 
-    with st.spinner("Hesaplamalar yapılıyor..."):
+    with st.spinner("İdealite ve Ucuzluk Skorları Hesaplanıyor..."):
         results = []
-        blacklist = ["bank", "financial", "credit", "crypto", "gambling", "casino", "insurance", "banka", "finans", "sigorta", "yatırım", "menkul", "faktoring"]
+        blacklist = ["bank", "financial", "credit", "crypto", "gambling", "casino", "insurance", 
+                     "banka", "finans", "sigorta", "yatırım", "menkul", "faktoring"]
         
-        valid_pes = [d["pe"] for d in fundamental_data.values() if not np.isnan(d["pe"]) and not (exclude_finance and any(b in d["sector"].lower() for b in blacklist))]
+        # Filtrelenmiş sepet medyanı
+        valid_pes = [d["pe"] for d in fundamental_data.values() if pd.notna(d["pe"]) and not (exclude_finance and any(b in d["sector"].lower() for b in blacklist))]
         avg_basket_pe = np.median(valid_pes) if valid_pes else 10.0
         
         for sym in tickers:
             if sym not in data.columns or data[sym].isnull().all(): continue
             f_info = fundamental_data.get(sym, {"pe": np.nan, "sector": "Bilinmiyor"})
+            
             if exclude_finance and any(b in f_info["sector"].lower() for b in blacklist):
-                debug_logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🛡️ {sym} elendi ({f_info['sector']})")
+                debug_logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🛡️ {sym} filtrelendi.")
                 continue
 
             p_close = data[sym]
@@ -132,9 +158,9 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
             diff = (stock_rs - bench_rs).tail(lookback)
             rs_ratio = diff[diff > 0].sum() / (abs(diff[diff <= 0].sum()) if diff[diff <= 0].sum() != 0 else 0.0001)
             
-            # Beta ve İdealite
-            stock_ret, idx_ret = p_close.pct_change().tail(252), p_index.pct_change().tail(252)
-            beta = (stock_ret.corr(idx_ret) * (stock_ret.std() / idx_ret.std())) if idx_ret.std() > 0 else 1.0
+            stock_ret = p_close.pct_change().tail(252)
+            curr_idx_ret = idx_ret.tail(252)
+            beta = (stock_ret.corr(curr_idx_ret) * (stock_ret.std() / curr_idx_ret.std())) if curr_idx_ret.std() > 0 else 1.0
             ideal_score = (rs_ratio + (rs_ratio / max(0.1, beta))) / 2.0
             
             results.append({
@@ -145,21 +171,22 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
                 "İdealite": ideal_score,
                 "F/K Değeri": f_info["pe"],
                 "Ort. İleri F/K": avg_basket_pe,
-                "Ucuzluk Skoru (x)": -999 if is_ipo else (f_info["pe"] / avg_basket_pe if not np.isnan(f_info["pe"]) else np.nan)
+                "Ucuzluk Skoru (x)": -999 if is_ipo else (f_info["pe"] / avg_basket_pe if pd.notna(f_info["pe"]) else np.nan)
             })
 
     if results:
         df = pd.DataFrame(results).sort_values("İdealite", ascending=False).reset_index(drop=True)
-        st.write(f"**Referans Medyan F/K:** `{round(avg_basket_pe, 2)}`")
+        st.write(f"**Referans Medyan F/K (Sepet):** `{round(avg_basket_pe, 2)}`")
         
-        # Stil ve Format (2 Ondalık)
-        st.dataframe(df.style.background_gradient(cmap='RdYlGn_r', subset=['Ucuzluk Skoru (x)'], vmin=0.5, vmax=2.0).format({
+        # Isı Haritası ve 2 Ondalık Format
+        styled_df = df.style.background_gradient(cmap='RdYlGn_r', subset=['Ucuzluk Skoru (x)'], vmin=0.5, vmax=2.0).format({
             "Saf Oran": "{:.2f}", "Beta": "{:.2f}", "İdealite": "{:.2f}", 
             "F/K Değeri": "{:.2f}", "Ort. İleri F/K": "{:.2f}",
             "Ucuzluk Skoru (x)": lambda x: "IPO" if x == -999 else (f"{x:.2f}" if pd.notna(x) else "Veri Yok")
-        }, na_rep="Veri Yok"), use_container_width=True, height=800)
+        }, na_rep="Veri Yok")
         
-        with st.expander("🛠️ Debug Konsolu"):
+        st.dataframe(styled_df, use_container_width=True, height=800)
+        with st.expander("🛠️ Saat Damgalı Debug Konsolu"):
             for log in debug_logs: st.write(log)
     else:
-        st.error("Görüntülenecek veri bulunamadı.")
+        st.error("Görüntülenecek veri bulunamadı. Filtreleri veya sembolleri kontrol edin.")
