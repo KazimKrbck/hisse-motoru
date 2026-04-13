@@ -1,190 +1,97 @@
-import streamlit as st
-import yfinance as yf
-import pandas as pd
-import numpy as np
-import time
-import requests
-import re
-import google.generativeai as genai
-from PIL import Image
-from datetime import datetime
+//@version=6
+indicator("Alpha-Hunt: Çift Ucuzluk Isı Haritası (Sola Yaslı)", overlay=true)
 
-# --- 1. SAYFA VE GÜVENLİK ---
-st.set_page_config(page_title="Alpha-Hunt Motoru", layout="wide")
+// =========================================================================
+// 1. GİRDİLER (İlk 20 Hisse)
+// =========================================================================
+var string note = "Python uygulamasından çıkan ilk 20 hisseyi sırasıyla girin."
 
-def check_password():
-    if "authenticated" not in st.session_state:
-        st.session_state["authenticated"] = False
-    if not st.session_state["authenticated"]:
-        st.title("🔒 Kilitli Ekran")
-        st.warning("Bu uygulama Kâzım Karabacak'a aittir. Lütfen giriş yapın.")
-        pwd = st.text_input("Uygulama Şifresi", type="password")
-        if st.button("Giriş Yap"):
-            if "APP_PASSWORD" in st.secrets and pwd == st.secrets["APP_PASSWORD"]:
-                st.session_state["authenticated"] = True
-                st.rerun()
-            else:
-                st.error("❌ Hatalı şifre!")
-        st.stop()
+s01 = input.symbol("", "1. Hisse", group="RS Rank Sıralaması", tooltip=note), s02 = input.symbol("", "2. Hisse", group="RS Rank Sıralaması")
+s03 = input.symbol("", "3. Hisse", group="RS Rank Sıralaması"), s04 = input.symbol("", "4. Hisse", group="RS Rank Sıralaması")
+s05 = input.symbol("", "5. Hisse", group="RS Rank Sıralaması"), s06 = input.symbol("", "6. Hisse", group="RS Rank Sıralaması")
+s07 = input.symbol("", "7. Hisse", group="RS Rank Sıralaması"), s08 = input.symbol("", "8. Hisse", group="RS Rank Sıralaması")
+s09 = input.symbol("", "9. Hisse", group="RS Rank Sıralaması"), s10 = input.symbol("", "10. Hisse", group="RS Rank Sıralaması")
 
-check_password()
+s11 = input.symbol("", "11. Hisse", group="RS Rank Sıralaması"), s12 = input.symbol("", "12. Hisse", group="RS Rank Sıralaması")
+s13 = input.symbol("", "13. Hisse", group="RS Rank Sıralaması"), s14 = input.symbol("", "14. Hisse", group="RS Rank Sıralaması")
+s15 = input.symbol("", "15. Hisse", group="RS Rank Sıralaması"), s16 = input.symbol("", "16. Hisse", group="RS Rank Sıralaması")
+s17 = input.symbol("", "17. Hisse", group="RS Rank Sıralaması"), s18 = input.symbol("", "18. Hisse", group="RS Rank Sıralaması")
+s19 = input.symbol("", "19. Hisse", group="RS Rank Sıralaması"), s20 = input.symbol("", "20. Hisse", group="RS Rank Sıralaması")
 
-st.title("Alpha-Hunt: Çift Katmanlı Ucuzluk & RsRank Motoru [KazimKrbck]")
-st.markdown("Analiz: **İdealite (Trend)** + **Temel Büyüme (F/K)** + **Teknik Ortalamaya Dönüş (500G)**.")
+// =========================================================================
+// 2. VERİ MOTORU VE KONTRAST RENGİ
+// =========================================================================
+var string dummy_sym = "NASDAQ:AAPL" 
 
-# --- 2. PARAMETRELER VE GEMINI ---
-st.sidebar.header("Parametreler")
-bist_mode = st.sidebar.checkbox("🇹🇷 Borsa İstanbul (BIST) Modu", value=False)
-
-default_tickers = "THYAO, TUPRS, KCHOL, EREGL, FROTO" if bist_mode else "AAPL, MSFT, GOOGL, NVDA, META, TSLA, AVGO"
-default_bench = "XU100.IS" if bist_mode else "^GSPC"
-default_dxy = "TRY=X" if bist_mode else "DX-Y.NYB"
-
-st.sidebar.markdown("---")
-st.sidebar.subheader("🤖 Resimden Hisse Çıkarma")
-if "GEMINI_API_KEY" in st.secrets:
-    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-    st.sidebar.success("🔑 Gemini API Anahtarı yüklendi!")
-else:
-    st.sidebar.warning("Gemini API Anahtarı eksik!")
-
-uploaded_file = st.sidebar.file_uploader("Resim Yükle", type=["png", "jpg", "jpeg"])
-if "current_tickers" not in st.session_state: st.session_state.current_tickers = default_tickers
-
-if uploaded_file and "GEMINI_API_KEY" in st.secrets:
-    if st.sidebar.button("✨ Resmi Oku"):
-        with st.spinner("Gemini inceliyor..."):
-            try:
-                model = genai.GenerativeModel('gemini-2.5-flash')
-                prompt = "Resimdeki tickerları bul. SADECE büyük harflerle, virgülle ayrılmış liste ver. Örn: AAPL, MSFT"
-                response = model.generate_content([prompt, Image.open(uploaded_file)])
-                st.session_state.current_tickers = response.text.strip()
-                st.rerun()
-            except Exception as e: st.sidebar.error(str(e))
-
-st.sidebar.markdown("---")
-tickers_input = st.sidebar.text_area("Hisse Sembolleri (Virgülle ayırın)", st.session_state.current_tickers, height=150)
-bench_ticker = st.sidebar.text_input("Endeks", default_bench)
-dxy_ticker = st.sidebar.text_input("Likidite (DXY)", default_dxy)
-lookback = st.sidebar.number_input("LookBack (Gün)", value=500)
-
-raw_tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
-tickers = [t + ".IS" if bist_mode and not t.endswith(".IS") else t for t in raw_tickers]
-
-# --- 3. HAFIZA VE BAN KORUMALI VERİ MOTORU ---
-def calc_roc(series, periods): return series.pct_change(periods=periods) * 100
-def calc_weighted_rs(series): return (0.4 * calc_roc(series, 63) + 0.2 * calc_roc(series, 126) + 0.2 * calc_roc(series, 189) + 0.2 * calc_roc(series, 252))
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def fetch_price_data(all_ticks): return yf.download(all_ticks, period="4y", interval="1d", progress=False)["Close"]
-
-@st.cache_data(ttl=86400, show_spinner=False)
-def fetch_fundamental_data(sym, is_bist):
-    t_pe, f_pe, sec = np.nan, np.nan, "Bilinmiyor"
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"} # Ban Koruması
+get_metrics(sym) =>
+    real_sym = sym == "" ? dummy_sym : sym
+    pe_val = request.financial(real_sym, "PRICE_EARNINGS_FORWARD", "FY", ignore_invalid_symbol=true)
+    v_pe = na(pe_val) ? 0.0 : pe_val
+    v_c = na(pe_val) ? 0 : 1
+    s_pe = math.sum(v_pe, 1250), s_c = math.sum(v_c, 1250)
+    a_pe = s_c > 0 ? (s_pe / s_c) : na
+    fk_r = (sym == "" or na(pe_val) or na(a_pe) or a_pe <= 0) ? na : (pe_val / a_pe)
+    y_av = (sym == "") ? 0.0 : (s_c / 252.0)
     
-    try:
-        info = yf.Ticker(sym).info
-        sec = info.get('sector', info.get('industry', 'Bilinmiyor'))
-        t_pe = info.get('trailingPE', np.nan)
-        f_pe = info.get('forwardPE', np.nan)
-        if pd.notna(t_pe) and (t_pe <= 0 or t_pe > 500): t_pe = np.nan
-        if pd.notna(f_pe) and (f_pe <= 0 or f_pe > 500): f_pe = np.nan
-        if (pd.notna(t_pe) or pd.notna(f_pe)) and sec != "Bilinmiyor":
-            return t_pe, f_pe, sec, f"✅ {sym}: Yahoo OK", "success"
-    except: pass
+    [c_p, sma] = request.security(real_sym, "D", [close, ta.sma(close, 500)], ignore_invalid_symbol=true)
+    t_r = (sym == "" or na(c_p) or na(sma) or sma <= 0) ? na : (c_p / sma)
+    [fk_r, y_av, t_r]
 
-    if not is_bist:
-        try:
-            res = requests.get(f"https://finviz.com/quote.ashx?t={sym}", headers=headers, timeout=5)
-            if sec == "Bilinmiyor":
-                m = re.search(r'f=sec_[^>]+>([^<]+)</a>', res.text)
-                if m: sec = m.group(1)
-            m_pe = re.search(r'>P/E<.*?<b>(.*?)</b>', res.text)
-            m_fwd = re.search(r'Forward P/E.*?<b>(.*?)</b>', res.text)
-            if m_pe and m_pe.group(1) != '-': t_pe = float(m_pe.group(1))
-            if m_fwd and m_fwd.group(1) != '-': f_pe = float(m_fwd.group(1))
-            if sec != "Bilinmiyor" or pd.notna(t_pe) or pd.notna(f_pe):
-                return t_pe, f_pe, sec, f"🔄 {sym}: Finviz OK", "success"
-        except: pass
-    return t_pe, f_pe, sec, f"❌ {sym}: Veri Yok", "error"
+get_txt_color(val, mid_val) =>
+    na(val) ? color.white : (math.abs(val - mid_val) > 0.25 ? color.white : color.black)
 
-# --- 4. ANALİZ VE HESAPLAMA ---
-if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
-    debug_logs = []
-    with st.spinner("Fiyatlar indiriliyor..."):
-        data = fetch_price_data(tickers + [bench_ticker, dxy_ticker]).ffill().dropna(subset=[bench_ticker])
-        p_idx, p_dxy = data[bench_ticker], data[dxy_ticker]
-        adj_bench = pd.Series(np.where(p_dxy > 0, p_idx / p_dxy, p_idx), index=data.index)
-        bench_rs = calc_weighted_rs(adj_bench)
-        idx_ret = p_idx.pct_change()
+[fk01, y01, t01] = get_metrics(s01), [fk02, y02, t02] = get_metrics(s02), [fk03, y03, t03] = get_metrics(s03)
+[fk04, y04, t04] = get_metrics(s04), [fk05, y05, t05] = get_metrics(s05), [fk06, y06, t06] = get_metrics(s06)
+[fk07, y07, t07] = get_metrics(s07), [fk08, y08, t08] = get_metrics(s08), [fk09, y09, t09] = get_metrics(s09)
+[fk10, y10, t10] = get_metrics(s10), [fk11, y11, t11] = get_metrics(s11), [fk12, y12, t12] = get_metrics(s12)
+[fk13, y13, t13] = get_metrics(s13), [fk14, y14, t14] = get_metrics(s14), [fk15, y15, t15] = get_metrics(s15)
+[fk16, y16, t16] = get_metrics(s16), [fk17, y17, t17] = get_metrics(s17), [fk18, y18, t18] = get_metrics(s18)
+[fk19, y19, t19] = get_metrics(s19), [fk20, y20, t20] = get_metrics(s20)
 
-    with st.spinner("Temel veriler çekiliyor..."):
-        f_data = {}
-        for s in tickers:
-            t_pe, f_pe, sec, msg, tp = fetch_fundamental_data(s, bist_mode)
-            f_data[s] = {"trail": t_pe, "fwd": f_pe, "sec": sec}
-            debug_logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
-            time.sleep(0.1) # Ban Koruması (Hız Kesici)
+// =========================================================================
+// 3. TABLO (OUTLIER KORUMASI + KONTRAST + 2 ONDALIK + SOLA YASLI)
+// =========================================================================
+add_arr(s, f, y, t, arr_s, arr_f, arr_y, arr_t) =>
+    if s != ""
+        array.push(arr_s, s), array.push(arr_f, f), array.push(arr_y, y), array.push(arr_t, t)
 
-    with st.spinner("Sonuçlar hesaplanıyor..."):
-        results = []
-        all_fwd = [d["fwd"] for d in f_data.values() if pd.notna(d["fwd"])]
-        avg_fwd = np.median(all_fwd) if all_fwd else 20.0
+if barstate.islast
+    s_a = array.new_string(), f_a = array.new_float(), y_a = array.new_float(), t_a = array.new_float()
+    add_arr(s01, fk01, y01, t01, s_a, f_a, y_a, t_a), add_arr(s02, fk02, y02, t02, s_a, f_a, y_a, t_a)
+    add_arr(s03, fk03, y03, t03, s_a, f_a, y_a, t_a), add_arr(s04, fk04, y04, t04, s_a, f_a, y_a, t_a)
+    add_arr(s05, fk05, y05, t05, s_a, f_a, y_a, t_a), add_arr(s06, fk06, y06, t06, s_a, f_a, y_a, t_a)
+    add_arr(s07, fk07, y07, t07, s_a, f_a, y_a, t_a), add_arr(s08, fk08, y08, t08, s_a, f_a, y_a, t_a)
+    add_arr(s09, fk09, y09, t09, s_a, f_a, y_a, t_a), add_arr(s10, fk10, y10, t10, s_a, f_a, y_a, t_a)
+    add_arr(s11, fk11, y11, t11, s_a, f_a, y_a, t_a), add_arr(s12, fk12, y12, t12, s_a, f_a, y_a, t_a)
+    add_arr(s13, fk13, y13, t13, s_a, f_a, y_a, t_a), add_arr(s14, fk14, y14, t14, s_a, f_a, y_a, t_a)
+    add_arr(s15, fk15, y15, t15, s_a, f_a, y_a, t_a), add_arr(s16, fk16, y16, t16, s_a, f_a, y_a, t_a)
+    add_arr(s17, fk17, y17, t17, s_a, f_a, y_a, t_a), add_arr(s18, fk18, y18, t18, s_a, f_a, y_a, t_a)
+    add_arr(s19, fk19, y19, t19, s_a, f_a, y_a, t_a), add_arr(s20, fk20, y20, t20, s_a, f_a, y_a, t_a)
+
+    v_c = array.size(s_a)
+    if v_c > 0
+        tbl = table.new(position.middle_right, 4, v_c + 1, bgcolor = color.new(color.black, 10), border_width = 1, border_color = color.new(color.gray, 50))
         
-        for s in tickers:
-            if s not in data.columns or data[s].isnull().all(): continue
-            inf = f_data.get(s, {"trail": np.nan, "fwd": np.nan, "sec": "Bilinmiyor"})
-            p_close = data[s]
-            is_ipo = p_close.dropna().count() < lookback
-            
-            stk_rs = calc_weighted_rs(p_close)
-            diff = (stk_rs - bench_rs).tail(lookback)
-            rs_ratio = diff[diff > 0].sum() / (abs(diff[diff <= 0].sum()) if diff[diff <= 0].sum() != 0 else 0.0001)
-            
-            ret, iret = p_close.pct_change().tail(252), idx_ret.tail(252)
-            beta = (ret.corr(iret) * (ret.std() / iret.std())) if iret.std() > 0 else 1.0
-            ideal = (rs_ratio + (rs_ratio / max(0.1, beta))) / 2.0
-            
-            t_pe, f_pe = inf["trail"], inf["fwd"]
-            if pd.notna(t_pe) and pd.notna(f_pe) and t_pe > 0: growth_chp = f_pe / t_pe
-            elif pd.notna(f_pe): growth_chp = f_pe / avg_fwd
-            else: growth_chp = np.nan
-
-            hist_chp = p_close.iloc[-1] / p_close.tail(lookback).mean() if len(p_close) >= lookback else -999
-            
-            results.append({
-                "Hisse": s.replace(".IS", ""), "Sektör": inf["sec"], "Saf Oran": rs_ratio, 
-                "Beta": beta, "İdealite": ideal, "Temel Ucuzluk": growth_chp, "Teknik Ucuzluk": hist_chp
-            })
-
-    # --- 5. TABLO VE SABİT RENK SINIRLARI (OUTLIER KORUMASI) ---
-    if results:
-        df = pd.DataFrame(results).sort_values("İdealite", ascending=False).reset_index(drop=True)
-        st.write(f"**Sepet Medyan İleri F/K:** `{round(avg_fwd, 2)}`")
+        // Başlıklar (Sola Yaslı)
+        table.cell(tbl, 0, 0, "RS Rank Sırası", text_color=color.white, bgcolor=color.new(color.purple, 20), text_halign=text.align_left)
+        table.cell(tbl, 1, 0, "Hisse", text_color=color.white, bgcolor=color.new(color.purple, 20), text_halign=text.align_left)
+        table.cell(tbl, 2, 0, "Temel Ucz.", text_color=color.white, bgcolor=color.new(color.purple, 20), text_halign=text.align_left)
+        table.cell(tbl, 3, 0, "Teknik Ucz.", text_color=color.white, bgcolor=color.new(color.purple, 20), text_halign=text.align_left)
         
-        # vmin ve vmax değerleri renk kaymasını engeller (Sabit Sınır)
-        st.dataframe(df.style.background_gradient(cmap='RdYlGn_r', subset=['Temel Ucuzluk'], vmin=0.5, vmax=1.5)
-                     .background_gradient(cmap='RdYlGn_r', subset=['Teknik Ucuzluk'], vmin=0.7, vmax=1.3).format({
-            "Saf Oran": "{:.2f}", "Beta": "{:.2f}", "İdealite": "{:.2f}",
-            "Temel Ucuzluk": "{:.2f}", 
-            "Teknik Ucuzluk": lambda x: "IPO" if x == -999 else (f"{x:.2f}" if pd.notna(x) else "Veri Yok")
-        }, na_rep="Veri Yok"), use_container_width=True, height=1000)
-
-        st.markdown("---")
-        st.markdown("### 📋 TradingView Kopyalama Merkezi")
-        prefix = "BIST:" if bist_mode else "NASDAQ:"
-        c1, c2 = st.columns(2)
-        
-        with c1:
-            st.success("**TV Takip Listesi İçin (Tümü)**")
-            tv_str = ",".join([f"{prefix}{sym}" for sym in df["Hisse"].tolist()])
-            st.code(tv_str, language="text")
+        for i = 0 to v_c - 1
+            tick = array.size(str.split(array.get(s_a, i), ":")) > 1 ? array.get(str.split(array.get(s_a, i), ":"), 1) : array.get(s_a, i)
+            f_v = array.get(f_a, i), y_v = array.get(y_a, i), t_v = array.get(t_a, i)
             
-        with c2:
-            st.info("**TV Isı Haritası İçin (İlk 38)**")
-            t38 = df["Hisse"].head(38).tolist()
-            st.code(" \n".join([f"{i+1}. {sym}" for i, sym in enumerate(t38)]), language="text")
-
-        with st.expander("🛠️ Loglar"):
-            for l in debug_logs: st.write(l)
+            // Outlier Clipping
+            color f_c = na(f_v) ? color.new(color.gray, 50) : (f_v >= 1.0 ? color.from_gradient(math.min(f_v, 1.5), 1.0, 1.5, color.new(color.yellow, 10), color.new(color.red, 10)) : color.from_gradient(math.max(f_v, 0.5), 0.5, 1.0, color.new(color.green, 10), color.new(color.yellow, 10)))
+            color t_c = na(t_v) ? color.new(color.gray, 50) : (t_v >= 1.0 ? color.from_gradient(math.min(t_v, 1.3), 1.0, 1.3, color.new(color.yellow, 10), color.new(color.red, 10)) : color.from_gradient(math.max(t_v, 0.7), 0.7, 1.0, color.new(color.green, 10), color.new(color.yellow, 10)))
+            
+            // Kontrast Renkler
+            f_txt_c = get_txt_color(f_v, 1.0), t_txt_c = get_txt_color(t_v, 1.0)
+            y_t = y_v >= 4.9 ? "5Y" : str.tostring(y_v, "#.1") + "Y"
+            
+            // Veri Hücreleri (Sola Yaslı - text_halign eklendi)
+            table.cell(tbl, 0, i + 1, str.tostring(i + 1), text_color=color.white, text_halign=text.align_left)
+            table.cell(tbl, 1, i + 1, tick, text_color=color.white, text_halign=text.align_left)
+            table.cell(tbl, 2, i + 1, y_v == 0 or na(f_v) ? "Yok" : str.tostring(f_v, "#.00") + "x (" + y_t + ")", text_color=f_txt_c, bgcolor=y_v == 0 ? color.new(color.gray, 50) : f_c, text_halign=text.align_left)
+            table.cell(tbl, 3, i + 1, na(t_v) ? "Yok" : str.tostring(t_v, "#.00"), text_color=t_txt_c, bgcolor=t_c, text_halign=text.align_left)
