@@ -7,170 +7,266 @@ import requests
 import re
 import google.generativeai as genai
 from PIL import Image
-from datetime import datetime
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="Alpha-Hunt Motoru", layout="wide")
+st.set_page_config(page_title="Hisse Sıralama Motoru", layout="wide")
+st.title("Hisse RsRank bazlı İdealite ve LookBack kadar Ortalama F/K bazlı ucuzluk Isı Haritası (Yapay Zeka Destekli) [KazimKrbck]")
+st.markdown("Likidite ayarlı teknik metrikler, normalize edilmiş F/K haritası ve **Gemini Görüntü Okuma** sistemi.")
 
-# --- GÜVENLİK / ŞİFRE EKRANI ---
-def check_password():
-    if "authenticated" not in st.session_state:
-        st.session_state["authenticated"] = False
-    if not st.session_state["authenticated"]:
-        st.title("🔒 Kilitli Ekran")
-        st.warning("Bu uygulama Kâzım Karabacak'a aittir. Lütfen giriş yapın.")
-        pwd = st.text_input("Uygulama Şifresi", type="password")
-        if st.button("Giriş Yap"):
-            if "APP_PASSWORD" in st.secrets and pwd == st.secrets["APP_PASSWORD"]:
-                st.session_state["authenticated"] = True
-                st.rerun()
-            else:
-                st.error("❌ Hatalı şifre!")
-        st.stop()
-
-check_password()
-
-# --- BAŞLIK ---
-st.title("Alpha-Hunt: Sınırsız Ucuzluk & RsRank Motoru [KazimKrbck]")
-st.markdown("Analiz: **Katmanlı Temel Ucuzluk** (Forward/Trailing veya Sepet) + **Teknik Ortalamaya Dönüş**.")
-
-# --- PARAMETRELER ---
+# --- GİRDİLER VE GEMINI YAPAY ZEKA ---
 st.sidebar.header("Parametreler")
-bist_mode = st.sidebar.checkbox("🇹🇷 Borsa İstanbul (BIST) Modu", value=False)
+
+bist_mode = st.sidebar.checkbox("🇹🇷 Borsa İstanbul (BIST) Modu", value=False, help="Türk hisseleri için otomatik .IS uzantısı ekler.")
 
 if bist_mode:
     default_tickers = "THYAO, TUPRS, KCHOL, AKBNK, ISCTR, EREGL, FROTO, SISE, BIMAS, ASELS"
     default_bench = "XU100.IS"
     default_dxy = "TRY=X" 
 else:
-    default_tickers = "AAPL, MSFT, GOOGL, AMZN, NVDA, META, TSLA, AMD, AVGO"
+    default_tickers = "AAPL, MSFT, GOOGL, AMZN, NVDA, META, TSLA, INTC, AMD, NFLX"
     default_bench = "^GSPC"
     default_dxy = "DX-Y.NYB"
 
-# Gemini Bölümü
-if "GEMINI_API_KEY" in st.secrets:
-    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-uploaded_file = st.sidebar.file_uploader("Resimden Hisse Çek", type=["png", "jpg", "jpeg"])
-if "current_tickers" not in st.session_state: st.session_state.current_tickers = default_tickers
+# --- GEMINI GÖRÜNTÜ OKUMA BÖLÜMÜ ---
+st.sidebar.markdown("---")
+st.sidebar.subheader("🤖 Resimden Hisse Çıkarma")
 
-if uploaded_file and st.sidebar.button("✨ Resmi Oku"):
-    img = Image.open(uploaded_file)
-    model = genai.GenerativeModel('gemini-2.5-flash')
-    resp = model.generate_content(["Sadece tickerları virgülle ver. Örn: AAPL, MSFT", img])
-    st.session_state.current_tickers = resp.text.strip()
-    st.rerun()
+if "GEMINI_API_KEY" in st.secrets:
+    gemini_api_key = st.secrets["GEMINI_API_KEY"]
+    st.sidebar.success("🔑 Gemini API Anahtarı gizli kasadan güvenle yüklendi!")
+else:
+    gemini_api_key = st.sidebar.text_input("Gemini API Anahtarı (Zorunlu)", type="password", help="aistudio.google.com adresinden ücretsiz alabilirsiniz.")
+
+uploaded_file = st.sidebar.file_uploader("Hisse Listesi Resmi Yükle", type=["png", "jpg", "jpeg"])
+
+if "current_tickers" not in st.session_state:
+    st.session_state.current_tickers = default_tickers
+
+if uploaded_file is not None and gemini_api_key:
+    if st.sidebar.button("✨ Resmi Oku ve Listeyi Doldur"):
+        with st.spinner("Gemini resmi inceliyor, hisseleri buluyor..."):
+            try:
+                genai.configure(api_key=gemini_api_key)
+                model = genai.GenerativeModel('gemini-2.5-flash')
+                img = Image.open(uploaded_file)
+                
+                prompt = """
+                Bu resimde bir borsa/hisse tarama tablosu veya listesi var. 
+                Senden tek istediğim, resimdeki hisse senedi sembollerini (ticker) bulman.
+                Bana SADECE büyük harflerle, aralarında virgül ve boşluk olan bir liste ver.
+                Örnek çıktı: AAPL, MSFT, TSLA
+                Başka hiçbir cümle, açıklama veya kelime yazma! Sadece semboller.
+                """
+                response = model.generate_content([prompt, img])
+                
+                st.session_state.current_tickers = response.text.strip()
+                st.sidebar.success("Hisseler başarıyla çekildi! Aşağıdan analizi başlatabilirsiniz.")
+            except Exception as e:
+                st.sidebar.error(f"Yapay Zeka Hatası: Lütfen API anahtarınızı kontrol edin. ({str(e)[:40]})")
 
 st.sidebar.markdown("---")
-tickers_input = st.sidebar.text_area("Semboller", st.session_state.current_tickers, height=120)
-bench_ticker = st.sidebar.text_input("Endeks", default_bench)
-dxy_ticker = st.sidebar.text_input("Likidite (DXY)", default_dxy)
-lookback = st.sidebar.number_input("LookBack (Gün)", value=500)
+
+tickers_input = st.sidebar.text_area("Hisse Sembolleri (Virgülle ayırın, Maks 100)", st.session_state.current_tickers, height=150)
+
+bench_ticker = st.sidebar.text_input("Piyasa Endeksi", default_bench)
+dxy_ticker = st.sidebar.text_input("Kur/Likidite (DXY)", default_dxy)
+lookback = st.sidebar.number_input("Alan Oranı Geriye Bakış (Gün)", value=500)
 
 raw_tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
-tickers = [t + ".IS" if bist_mode and not t.endswith(".IS") else t for t in raw_tickers][:100]
+tickers = []
+for t in raw_tickers:
+    if bist_mode and not t.endswith(".IS"):
+        tickers.append(t + ".IS")
+    else:
+        tickers.append(t)
 
-# --- CACHE VE VERİ ÇEKME ---
-@st.cache_data(ttl=3600, max_entries=2, show_spinner=False)
-def fetch_price_data(all_ticks):
-    return yf.download(all_ticks, period="4y", interval="1d", progress=False)["Close"]
+if len(tickers) > 100:
+    st.sidebar.warning("100'den fazla hisse girdiniz. Performans için sadece ilk 100 hisse işlenecek.")
+    tickers = tickers[:100]
 
-@st.cache_data(ttl=86400, max_entries=150, show_spinner=False)
+# --- HESAPLAMA FONKSİYONLARI ---
+def calc_roc(series, periods):
+    return series.pct_change(periods=periods) * 100
+
+def calc_weighted_rs(series):
+    return (0.4 * calc_roc(series, 63) +
+            0.2 * calc_roc(series, 126) +
+            0.2 * calc_roc(series, 189) +
+            0.2 * calc_roc(series, 252))
+
+# ÖNBELLEKLEME EKLENDİ (TTL: 86400 saniye = 1 Gün). Veriler 1 gün boyunca API'ye gitmeden hafızadan okunur.
+@st.cache_data(ttl=86400, show_spinner=False)
 def fetch_fundamental_data(sym, is_bist):
-    trail, fwd, sector = np.nan, np.nan, "Bilinmiyor"
+    pe_val = np.nan
+    sector = "Bilinmiyor"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    
+    # 1. YFINANCE (Yahoo)
     try:
-        t_obj = yf.Ticker(sym)
-        info = t_obj.info
-        sector = info.get('sector', info.get('industry', 'Bilinmiyor'))
-        trail = info.get('trailingPE', np.nan)
-        fwd = info.get('forwardPE', np.nan)
-        if pd.notna(trail) and (trail <= 0 or trail > 500): trail = np.nan
-        if pd.notna(fwd) and (fwd <= 0 or fwd > 500): fwd = np.nan
-        if (pd.notna(trail) or pd.notna(fwd)) and sector != "Bilinmiyor":
-            return trail, fwd, sector, f"✅ {sym}: Yahoo OK", "success"
-    except: pass
-    if not is_bist:
-        try:
-            res = requests.get(f"https://finviz.com/quote.ashx?t={sym}", headers=headers, timeout=5)
-            if sector == "Bilinmiyor":
-                m = re.search(r'f=sec_[^>]+>([^<]+)</a>', res.text)
-                if m: sector = m.group(1)
-            m_p = re.search(r'>P/E<.*?<b>(.*?)</b>', res.text)
-            m_f = re.search(r'Forward P/E.*?<b>(.*?)</b>', res.text)
-            if m_p and m_p.group(1) != '-': trail = float(m_p.group(1))
-            if m_f and m_f.group(1) != '-': fwd = float(m_f.group(1))
-            return trail, fwd, sector, f"🔄 {sym}: Finviz OK", "success"
-        except: pass
-    return trail, fwd, sector, f"❌ {sym}: Veri Yok", "error"
-
-# --- ANALİZ MOTORU ---
-if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
-    debug_logs = []
-    with st.spinner("1/2: Fiyatlar ve Teknik Analiz..."):
-        all_to_fetch = tickers + [bench_ticker, dxy_ticker]
-        data = fetch_price_data(all_to_fetch).ffill().dropna(subset=[bench_ticker])
-        p_index, p_curr = data[bench_ticker], data[dxy_ticker]
-        adj_bench = pd.Series(np.where(p_curr > 0, p_index / p_curr, p_index), index=data.index)
-        roc_adj = (0.4 * adj_bench.pct_change(63) + 0.2 * adj_bench.pct_change(126) + 
-                   0.2 * adj_bench.pct_change(189) + 0.2 * adj_bench.pct_change(252)) * 100
-        idx_ret = p_index.pct_change()
-
-    with st.spinner("2/2: Temel Veriler Çekiliyor..."):
-        f_data = {}
-        for s in tickers:
-            t, f, sec, msg, tp = fetch_fundamental_data(s, bist_mode)
-            f_data[s] = {"trail": t, "fwd": f, "sec": sec}
-            debug_logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
-            time.sleep(0.1)
-
-    with st.spinner("Sonuçlar Hesaplanıyor..."):
-        results = []
-        # Referans İleri F/K (Tüm sepet üzerinden)
-        all_fwd_pes = [d["fwd"] for d in f_data.values() if pd.notna(d["fwd"])]
-        avg_basket_fwd = np.median(all_fwd_pes) if all_fwd_pes else 20.0
+        ticker_obj = yf.Ticker(sym)
+        info = ticker_obj.info
         
-        for s in tickers:
-            if s not in data.columns or data[s].isnull().all(): continue
-            inf = f_data.get(s, {"trail": np.nan, "fwd": np.nan, "sec": "Bilinmiyor"})
+        sector = info.get('sector', info.get('industry', 'Bilinmiyor'))
+        
+        if is_bist:
+            pe_val = info.get('trailingPE', info.get('forwardPE', np.nan))
+        else:
+            pe_val = info.get('forwardPE', info.get('trailingPE', np.nan))
+            
+        if pd.notna(pe_val) and pe_val > 0 and sector != "Bilinmiyor":
+            return pe_val, sector, f"✅ {sym}: Veri Yahoo'dan çekildi.", "success"
+    except Exception:
+        pass # Hata mesajını Finviz denemesinden sonraya bırakıyoruz
 
-            # RS Rank & İdealite
-            stk_roc = (0.4 * data[s].pct_change(63) + 0.2 * data[s].pct_change(126) + 
-                       0.2 * data[s].pct_change(189) + 0.2 * data[s].pct_change(252)) * 100
-            diff = (stk_roc - roc_adj).tail(lookback)
-            rs = diff[diff > 0].sum() / (abs(diff[diff <= 0].sum()) if diff[diff <= 0].sum() != 0 else 0.0001)
-            ret, iret = data[s].pct_change().tail(252), idx_ret.tail(252)
-            beta = (ret.corr(iret) * (ret.std() / iret.std())) if iret.std() > 0 else 1.0
-            ideal = (rs + (rs / max(0.1, beta))) / 2.0
+    # 2. FINVIZ (Yedek Motor)
+    if is_bist:
+        return np.nan, sector, f"⚠️ {sym}: BIST hissesi için Yahoo eksik veri gönderdi.", "warning"
+        
+    try:
+        url = f"https://finviz.com/quote.ashx?t={sym}"
+        res = requests.get(url, headers=headers, timeout=5)
+        
+        if sector == "Bilinmiyor":
+            match_sec = re.search(r'f=sec_[^>]+>([^<]+)</a>', res.text)
+            if match_sec:
+                sector = match_sec.group(1)
+        
+        if np.isnan(pe_val):
+            match_fwd = re.search(r'Forward P/E.*?<b>(.*?)</b>', res.text)
+            match_pe = re.search(r'>P/E<.*?<b>(.*?)</b>', res.text)
+            
+            if match_fwd and match_fwd.group(1) != '-':
+                pe_val = float(match_fwd.group(1))
+            elif match_pe and match_pe.group(1) != '-':
+                pe_val = float(match_pe.group(1))
+        
+        if sector != "Bilinmiyor" or not np.isnan(pe_val):
+            return pe_val, sector, f"🔄 {sym}: Eksikler FINVIZ üzerinden kurtarıldı.", "success"
+        else:
+            return pe_val, sector, f"❌ {sym}: Veri bulunamadı.", "error"
+            
+    except Exception:
+        return pe_val, sector, f"❌ {sym}: Finviz bağlantı hatası.", "error"
 
-            # Katmanlı Ucuzluk
-            t_pe, f_pe = inf["trail"], inf["fwd"]
-            if pd.notna(t_pe) and pd.notna(f_pe) and t_pe > 0:
-                growth_chp = f_pe / t_pe
-            elif pd.notna(f_pe):
-                growth_chp = f_pe / avg_basket_fwd
+
+# --- VERİ ÇEKME VE İŞLEME ---
+if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
+    debug_logs = [] 
+    
+    with st.spinner("1/2: Fiyat verileri indiriliyor (Teknik Analiz)..."):
+        all_tickers = tickers + [bench_ticker, dxy_ticker]
+        data = yf.download(all_tickers, period="4y", interval="1d")["Close"]
+        data = data.ffill().dropna(subset=[bench_ticker])
+        
+        p_index = data[bench_ticker]
+        p_curr = data[dxy_ticker]
+        
+        adj_bench_series = pd.Series(np.where(p_curr > 0, p_index / p_curr, p_index), index=data.index)
+        bench_rs = calc_weighted_rs(adj_bench_series)
+        index_ret = calc_roc(p_index, 1)
+
+    with st.spinner("2/2: Temel veriler (F/K ve Sektör) çekiliyor (Önbellekli Sistem)..."):
+        progress_bar = st.progress(0)
+        fundamental_data = {}
+        
+        for i, sym in enumerate(tickers):
+            pe, sec, log_msg, log_type = fetch_fundamental_data(sym, bist_mode)
+            fundamental_data[sym] = {"pe": pe, "sector": sec}
+            
+            # Logları arayüz için topluyoruz
+            if log_type == "success":
+                debug_logs.append(log_msg)
+            elif log_type == "warning":
+                debug_logs.append(log_msg)
             else:
-                growth_chp = np.nan
+                debug_logs.append(log_msg)
+                
+            progress_bar.progress((i + 1) / len(tickers))
+        
+        progress_bar.empty()
 
-            hist_chp = data[s].iloc[-1] / data[s].tail(lookback).mean() if len(data[s]) >= lookback else -999
-
+    with st.spinner("Isı Haritası Oluşturuluyor..."):
+        results = []
+        valid_pes = [d["pe"] for d in fundamental_data.values() if not np.isnan(d["pe"])]
+        avg_basket_pe = np.median(valid_pes) if valid_pes else 10.0
+        
+        for sym in tickers:
+            if sym not in data.columns or data[sym].isnull().all():
+                continue
+                
+            p_close = data[sym]
+            
+            # --- IPO FİLTRESİ ---
+            valid_days = p_close.dropna().count()
+            is_ipo = valid_days < lookback
+            
+            if is_ipo:
+                debug_logs.append(f"⚠️ {sym}: {valid_days} günlük veri var. Kriter altı olduğu için IPO işaretlendi.")
+            
+            stock_rs = calc_weighted_rs(p_close)
+            
+            diff = (stock_rs - bench_rs).tail(lookback)
+            navy_area = diff[diff > 0].sum()
+            fuchsia_area = abs(diff[diff <= 0].sum())
+            rs_ratio = navy_area / (0.0001 if fuchsia_area == 0 else fuchsia_area)
+            
+            stock_ret = calc_roc(p_close, 1).tail(252)
+            index_ret_252 = index_ret.tail(252)
+            corr = stock_ret.corr(index_ret_252)
+            
+            beta = (corr * (stock_ret.std() / index_ret_252.std())) if index_ret_252.std() > 0 else 1.0
+            beta_adj_score = rs_ratio / (0.1 if beta <= 0.1 else beta)
+            ideal_score = (rs_ratio + beta_adj_score) / 2.0
+            
+            f_info = fundamental_data.get(sym, {"pe": np.nan, "sector": "Bilinmiyor"})
+            pe_val = f_info["pe"]
+            sector_val = f_info["sector"]
+            
+            # Eğer IPO ise Ucuzluk Skoruna gizli bir -999 atıyoruz (Formatta yakalamak için)
+            if is_ipo:
+                cheapness_ratio = -999 
+            else:
+                cheapness_ratio = pe_val / avg_basket_pe if not np.isnan(pe_val) else np.nan
+            
+            display_sym = sym.replace(".IS", "") if bist_mode else sym
+            
             results.append({
-                "Hisse": s.replace(".IS", ""), "Sektör": inf["sec"], "Saf Oran": rs, "Beta": beta,
-                "İdealite": ideal, "Geçmiş F/K": t_pe, "İleri F/K": f_pe,
-                "Temel Ucuzluk": growth_chp, "Teknik Ucuzluk": hist_chp
+                "Hisse": display_sym,
+                "Sektör": sector_val,
+                "Saf Oran (P/N)": round(rs_ratio, 2),
+                "Beta Skor": round(beta_adj_score, 2),
+                "İdealite": round(ideal_score, 2),
+                "F/K Değeri": round(pe_val, 2) if not np.isnan(pe_val) else np.nan,
+                "Ucuzluk Skoru (x)": cheapness_ratio
             })
 
-    if results:
-        res_df = pd.DataFrame(results).sort_values("İdealite", ascending=False).reset_index(drop=True)
-        st.write(f"**Referans İleri F/K (Sepet Medyanı):** `{round(avg_basket_fwd, 2)}`")
-        
-        st.dataframe(res_df.style.background_gradient(cmap='RdYlGn_r', subset=['Temel Ucuzluk'], vmin=0.5, vmax=1.5)
-                     .background_gradient(cmap='RdYlGn_r', subset=['Teknik Ucuzluk'], vmin=0.7, vmax=1.3).format({
-            "Saf Oran": "{:.2f}", "Beta": "{:.2f}", "İdealite": "{:.2f}", 
-            "Geçmiş F/K": lambda x: f"{x:.2f}" if pd.notna(x) else "-", 
-            "İleri F/K": lambda x: f"{x:.2f}" if pd.notna(x) else "-",
-            "Temel Ucuzluk": "{:.2f}", 
-            "Teknik Ucuzluk": lambda x: "IPO" if x == -999 else (f"{x:.2f}" if pd.notna(x) else "Veri Yok")
-        }, na_rep="Analiz Yok"), use_container_width=True, height=800)
-        
-        with st.expander("🛠️ Log Kayıtları"):
-            for l in debug_logs: st.write(l)
+        if results:
+            df_results = pd.DataFrame(results)
+            st.markdown(f"**Sepet Medyan F/K:** `{round(avg_basket_pe, 2)}` *(Referans değer)*")
+            
+            df_sorted = df_results.sort_values(by="İdealite", ascending=False).reset_index(drop=True)
+            
+            # Lambda ile -999'u yakalayıp "IPO" yazdırıyoruz, aksi halde sadece skoru yazıyoruz
+            styled_df = df_sorted.style.background_gradient(
+                cmap='RdYlGn_r', 
+                subset=['Ucuzluk Skoru (x)'], 
+                vmin=0.5, 
+                vmax=2.0  
+            ).format({
+                "Ucuzluk Skoru (x)": lambda x: "IPO" if x == -999 else (f"{x:.2f}" if pd.notna(x) else "Veri Yok"),
+                "F/K Değeri": "{:.2f}"
+            }, na_rep="Veri Yok")
+            
+            st.dataframe(styled_df, use_container_width=True, height=1150)
+            
+            st.markdown("---")
+            with st.expander("🛠️ Hata Ayıklama Konsolu (Tıkla Aç)"):
+                for log in debug_logs:
+                    if "✅" in log or "🔄" in log:
+                        st.success(log)
+                    elif "⚠️" in log:
+                        st.warning(log)
+                    else:
+                        st.error(log)
+        else:
+            st.error("Veri işlenemedi. Lütfen sembolleri kontrol edin.")
