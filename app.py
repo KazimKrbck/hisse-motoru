@@ -31,8 +31,8 @@ def check_password():
 check_password()
 
 # --- BAŞLIK ---
-st.title("Alpha-Hunt: Çift Ucuzluk & RsRank Motoru [KazimKrbck]")
-st.markdown("Analiz: **Temel Büyüme/Sektör** + **Teknik Ortalamaya Dönüş** (Fiyat/500G Ort).")
+st.title("Alpha-Hunt: Akıllı Ucuzluk & RsRank Motoru [KazimKrbck]")
+st.markdown("Analiz: **Katmanlı Temel Ucuzluk** (Kendi Büyümesi veya Sepet Kıyası) + **Teknik Ortalamaya Dönüş**.")
 
 # --- PARAMETRELER ---
 st.sidebar.header("Parametreler")
@@ -126,7 +126,7 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
         results = []
         bl = ["bank", "financial", "credit", "crypto", "gambling", "banka", "finans", "sigorta", "yatırım", "menkul", "faktoring"]
         
-        # Medyan F/K (Yedek karşılaştırma için)
+        # Sepet Medyanı (Eski Yöntem İçin Referans)
         all_fwd_pes = [d["fwd"] for d in f_data.values() if pd.notna(d["fwd"])]
         avg_basket_fwd = np.median(all_fwd_pes) if all_fwd_pes else 20.0
         
@@ -145,13 +145,13 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
             beta = (ret.corr(iret) * (ret.std() / iret.std())) if iret.std() > 0 else 1.0
             ideal = (rs + (rs / max(0.1, beta))) / 2.0
 
-            # --- HİBRİT TEMEL UCUZLUK ---
+            # --- KATMANLI TEMEL UCUZLUK ---
             t_pe, f_pe = inf["trail"], inf["fwd"]
             if pd.notna(t_pe) and pd.notna(f_pe) and t_pe > 0:
-                # Kendi büyümesine göre ucuzluk
+                # 1. TERCİH: Kendi büyüme oranı
                 growth_chp = f_pe / t_pe
             elif pd.notna(f_pe):
-                # Geçmiş yoksa sepet ortalamasına göre ucuzluk
+                # 2. TERCİH (AVGO KURTARICI): Sepet medyanına göre ucuzluk
                 growth_chp = f_pe / avg_basket_fwd
             else:
                 growth_chp = np.nan
@@ -167,15 +167,16 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
 
     if results:
         res_df = pd.DataFrame(results).sort_values("İdealite", ascending=False).reset_index(drop=True)
-        st.write(f"**Referans İleri F/K (Sepet Medyanı):** `{round(avg_basket_fwd, 2)}`")
+        st.write(f"**Referans İleri F/K (Sepet Medyanı):** `{round(avg_basket_fwd, 2)}` *(Veri eksikliğinde kullanılır)*")
         
         st.dataframe(res_df.style.background_gradient(cmap='RdYlGn_r', subset=['Temel Ucuzluk'], vmin=0.5, vmax=1.5)
                      .background_gradient(cmap='RdYlGn_r', subset=['Teknik Ucuzluk'], vmin=0.7, vmax=1.3).format({
             "Saf Oran": "{:.2f}", "Beta": "{:.2f}", "İdealite": "{:.2f}", 
-            "Geçmiş F/K": "{:.2f}", "İleri F/K": "{:.2f}",
+            "Geçmiş F/K": lambda x: f"{x:.2f}" if pd.notna(x) else "-", 
+            "İleri F/K": lambda x: f"{x:.2f}" if pd.notna(x) else "-",
             "Temel Ucuzluk": "{:.2f}", 
             "Teknik Ucuzluk": lambda x: "IPO" if x == -999 else (f"{x:.2f}" if pd.notna(x) else "Veri Yok")
-        }, na_rep="Veri Yok"), use_container_width=True, height=800)
+        }, na_rep="Analiz Yok"), use_container_width=True, height=800)
         with st.expander("Loglar"):
             for l in debug_logs: st.write(l)
     else:
