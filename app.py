@@ -11,6 +11,37 @@ from datetime import datetime
 
 # --- SAYFA AYARLARI ---
 st.set_page_config(page_title="Hisse Sıralama Motoru", layout="wide")
+
+# --- GÜVENLİK / ŞİFRE EKRANI ---
+def check_password():
+    if "authenticated" not in st.session_state:
+        st.session_state["authenticated"] = False
+
+    if not st.session_state["authenticated"]:
+        st.title("🔒 Kilitli Ekran")
+        st.warning("Bu uygulama Kâzım Karabacak'a aittir ve şifre korumalıdır. Lütfen giriş yapın.")
+        
+        pwd = st.text_input("Uygulama Şifresi", type="password")
+        
+        if st.button("Giriş Yap"):
+            if "APP_PASSWORD" in st.secrets and pwd == st.secrets["APP_PASSWORD"]:
+                st.session_state["authenticated"] = True
+                st.success("Şifre doğru! Sisteme giriliyor...")
+                time.sleep(1)
+                st.rerun()  # Sayfayı yenile ve kilitleri aç
+            else:
+                st.error("❌ Hatalı şifre girdiniz!")
+                
+        # Şifre girilmediği sürece BURADA DUR, aşağdaki hiçbir kodu çalıştırma!
+        st.stop()
+
+# Güvenlik kontrolünü çağır
+check_password()
+
+# ---------------------------------------------------------
+# AŞAĞIDAKİ KODLAR SADECE ŞİFRE DOĞRUYSA ÇALIŞIR
+# ---------------------------------------------------------
+
 st.title("Hisse RsRank bazlı İdealite ve Ortalama F/K bazlı Ucuzluk Isı Haritası [KazimKrbck]")
 st.markdown("Likidite ayarlı teknik metrikler, normalize edilmiş F/K haritası ve **Gemini Görüntü Okuma** sistemi.")
 
@@ -106,7 +137,6 @@ def fetch_fundamental_data(sym, is_bist):
         return pe_val, sector, f"⚠️ {sym}: BIST hissesi için Yahoo eksik veri verdi.", "warning"
         
     try:
-        # Bizi banlamaması için gerekli tam kimlik
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         url = f"https://finviz.com/quote.ashx?t={sym}"
         res = requests.get(url, headers=headers, timeout=5)
@@ -155,15 +185,13 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
             pe, sec, msg, tp = fetch_fundamental_data(sym, bist_mode)
             fundamental_data[sym] = {"pe": pe, "sector": sec}
             debug_logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
-            time.sleep(0.1)  # API'lerin sunucuyu dondurmasını engellemek için saliselik nefes
+            time.sleep(0.1) 
 
     with st.spinner("İdealite ve Ucuzluk Skorları Hesaplanıyor..."):
         results = []
-        # Hem Türkçe hem İngilizce zırhlı kara liste
         blacklist = ["bank", "financial", "credit", "crypto", "gambling", "casino", "insurance", 
                      "banka", "finans", "sigorta", "yatırım", "menkul", "faktoring"]
         
-        # Filtrelenmiş sepet medyanı
         valid_pes = [d["pe"] for d in fundamental_data.values() if pd.notna(d["pe"]) and not (exclude_finance and any(b in d["sector"].lower() for b in blacklist))]
         avg_basket_pe = np.median(valid_pes) if valid_pes else 10.0
         
@@ -201,7 +229,6 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
         df = pd.DataFrame(results).sort_values("İdealite", ascending=False).reset_index(drop=True)
         st.write(f"**Referans Medyan F/K (Sepet):** `{round(avg_basket_pe, 2)}`")
         
-        # Isı Haritası ve 2 Ondalık Format
         styled_df = df.style.background_gradient(cmap='RdYlGn_r', subset=['Ucuzluk Skoru (x)'], vmin=0.5, vmax=2.0).format({
             "Saf Oran": "{:.2f}", "Beta": "{:.2f}", "İdealite": "{:.2f}", 
             "F/K Değeri": "{:.2f}", "Ort. İleri F/K": "{:.2f}",
