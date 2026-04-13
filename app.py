@@ -132,4 +132,4 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
         st.code(",".join([f"{prefix}{sym}" for sym in df["Hisse"].tolist()]), language="text")
     with c2:
         st.info("**TV Isı Haritası İçin (İlk 20 Hisse)**")
-        st.code(" \n".join([f"{i+1}. {sym}" for i, sym in enumerate(df["Hisse"].head(20))]), language="text")
+        st.code(" \n".join([f"{i+1}. {sym}" for i, sym in enumerate(df["Hisse"].head(38))]), language="text")
