@@ -80,41 +80,63 @@ def calc_weighted_rs(series):
 def fetch_price_data(all_ticks):
     return yf.download(all_ticks, period="4y", interval="1d", progress=False)["Close"]
 
+# RAM Koruması ve Finviz Yedek Motorlu Kusursuz Veri Çekici
 @st.cache_data(ttl=86400, max_entries=150, show_spinner=False)
 def fetch_fundamental_data(sym, is_bist):
-    pe_val, sector = np.nan, "Bilinmiyor"
-    # 1. Yahoo
+    pe_val = np.nan
+    sector = "Bilinmiyor"
+    
+    # 1. YFINANCE (Yahoo)
     try:
         t_obj = yf.Ticker(sym)
         info = t_obj.info
         sector = info.get('sector', info.get('industry', 'Bilinmiyor'))
         pe_val = info.get('trailingPE' if is_bist else 'forwardPE', info.get('forwardPE' if is_bist else 'trailingPE', np.nan))
-        if pd.notna(pe_val) and (pe_val <= 0 or pe_val > 500): pe_val = np.nan
+        
+        if pd.notna(pe_val) and (pe_val <= 0 or pe_val > 500): 
+            pe_val = np.nan
+            
         if pd.notna(pe_val) and sector != "Bilinmiyor":
-            return pe_val, sector, f"✅ {sym}: Yahoo OK", "success"
-    except: pass
-    
-    # 2. Finviz (Sadece US için kurtarıcı)
-    if not is_bist:
-        try:
-            headers = {"User-Agent": "Mozilla/5.0"}
-            url = f"https://finviz.com/quote.ashx?t={sym}"
-            res = requests.get(url, headers=headers, timeout=5)
-            if sector == "Bilinmiyor":
-                m_sec = re.search(r'f=sec_[^>]+>([^<]+)</a>', res.text)
-                if m_sec: sector = m_sec.group(1)
-            if np.isnan(pe_val):
-                m_fwd = re.search(r'Forward P/E.*?<b>(.*?)</b>', res.text)
-                m_pe = re.search(r'>P/E<.*?<b>(.*?)</b>', res.text)
-                temp = np.nan
-                if m_fwd and m_fwd.group(1) != '-': temp = float(m_fwd.group(1))
-                elif m_pe and m_pe.group(1) != '-': temp = float(m_pe.group(1))
-                if 0 < temp <= 500: pe_val = temp
-            if sector != "Bilinmiyor" or pd.notna(pe_val):
-                return pe_val, sector, f"🔄 {sym}: Finviz Kurtardı", "success"
-        except: pass
-    
-    return pe_val, sector, f"❌ {sym}: Veri Yok", "error"
+            return pe_val, sector, f"✅ {sym}: Veri Yahoo'dan çekildi.", "success"
+    except Exception:
+        pass 
+
+    # 2. FINVIZ (Yedek Motor - Gerçek İnsan Kimliği İle)
+    if is_bist:
+        return pe_val, sector, f"⚠️ {sym}: BIST hissesi için Yahoo eksik veri verdi.", "warning"
+        
+    try:
+        # Bizi banlamaması için gerekli tam kimlik
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        url = f"https://finviz.com/quote.ashx?t={sym}"
+        res = requests.get(url, headers=headers, timeout=5)
+        
+        if sector == "Bilinmiyor":
+            match_sec = re.search(r'f=sec_[^>]+>([^<]+)</a>', res.text)
+            if match_sec:
+                sector = match_sec.group(1)
+        
+        if np.isnan(pe_val):
+            match_fwd = re.search(r'Forward P/E.*?<b>(.*?)</b>', res.text)
+            match_pe = re.search(r'>P/E<.*?<b>(.*?)</b>', res.text)
+            
+            temp_pe = np.nan
+            if match_fwd and match_fwd.group(1) != '-':
+                temp_pe = float(match_fwd.group(1))
+            elif match_pe and match_pe.group(1) != '-':
+                temp_pe = float(match_pe.group(1))
+                
+            if pd.notna(temp_pe) and 0 < temp_pe <= 500:
+                pe_val = temp_pe
+        
+        if sector != "Bilinmiyor" or not np.isnan(pe_val):
+            return pe_val, sector, f"🔄 {sym}: Eksikler FINVIZ üzerinden kurtarıldı.", "success"
+        else:
+            return pe_val, sector, f"❌ {sym}: Veri bulunamadı.", "error"
+            
+    except Exception:
+        return pe_val, sector, f"❌ {sym}: Finviz bağlantı hatası.", "error"
+
 
 # --- ANALİZ MOTORU ---
 if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
@@ -133,10 +155,11 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
             pe, sec, msg, tp = fetch_fundamental_data(sym, bist_mode)
             fundamental_data[sym] = {"pe": pe, "sector": sec}
             debug_logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
-            time.sleep(0.1) # RAM ve API Koruması
+            time.sleep(0.1)  # API'lerin sunucuyu dondurmasını engellemek için saliselik nefes
 
     with st.spinner("İdealite ve Ucuzluk Skorları Hesaplanıyor..."):
         results = []
+        # Hem Türkçe hem İngilizce zırhlı kara liste
         blacklist = ["bank", "financial", "credit", "crypto", "gambling", "casino", "insurance", 
                      "banka", "finans", "sigorta", "yatırım", "menkul", "faktoring"]
         
@@ -149,7 +172,7 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
             f_info = fundamental_data.get(sym, {"pe": np.nan, "sector": "Bilinmiyor"})
             
             if exclude_finance and any(b in f_info["sector"].lower() for b in blacklist):
-                debug_logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🛡️ {sym} filtrelendi.")
+                debug_logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] 🛡️ {sym} filtrelendi ({f_info['sector']}).")
                 continue
 
             p_close = data[sym]
