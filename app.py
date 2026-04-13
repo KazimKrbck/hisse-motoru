@@ -10,7 +10,7 @@ from PIL import Image
 from datetime import datetime
 
 # --- SAYFA AYARLARI ---
-st.set_page_config(page_title="Hisse Sıralama Motoru", layout="wide")
+st.set_page_config(page_title="Alpha-Hunt Motoru", layout="wide")
 
 # --- GÜVENLİK / ŞİFRE EKRANI ---
 def check_password():
@@ -32,7 +32,7 @@ check_password()
 
 # --- BAŞLIK ---
 st.title("Alpha-Hunt: Çift Ucuzluk & RsRank Motoru [KazimKrbck]")
-st.markdown("Analiz: **Temel Büyüme** (F/K Oranı) + **Teknik Ortalamaya Dönüş** (Fiyat/500G Ort).")
+st.markdown("Analiz: **Temel Büyüme/Sektör** + **Teknik Ortalamaya Dönüş** (Fiyat/500G Ort).")
 
 # --- PARAMETRELER ---
 st.sidebar.header("Parametreler")
@@ -58,7 +58,7 @@ if "current_tickers" not in st.session_state: st.session_state.current_tickers =
 if uploaded_file and st.sidebar.button("✨ Resmi Oku"):
     img = Image.open(uploaded_file)
     model = genai.GenerativeModel('gemini-2.5-flash')
-    resp = model.generate_content(["Sadece tickerları virgülle ver. Örn: AAPL, TSLA", img])
+    resp = model.generate_content(["Sadece tickerları virgülle ver. Örn: AAPL, MSFT", img])
     st.session_state.current_tickers = resp.text.strip()
     st.rerun()
 
@@ -80,9 +80,11 @@ def fetch_fundamental_data(sym, is_bist):
     trail, fwd, sector = np.nan, np.nan, "Bilinmiyor"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     try:
-        info = yf.Ticker(sym).info
+        t_obj = yf.Ticker(sym)
+        info = t_obj.info
         sector = info.get('sector', info.get('industry', 'Bilinmiyor'))
-        trail, fwd = info.get('trailingPE', np.nan), info.get('forwardPE', np.nan)
+        trail = info.get('trailingPE', np.nan)
+        fwd = info.get('forwardPE', np.nan)
         if pd.notna(trail) and (trail <= 0 or trail > 500): trail = np.nan
         if pd.notna(fwd) and (fwd <= 0 or fwd > 500): fwd = np.nan
         if (pd.notna(trail) or pd.notna(fwd)) and sector != "Bilinmiyor":
@@ -110,7 +112,6 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
         idx_ret = data[bench_ticker].pct_change()
         adj_bench = pd.Series(np.where(data[dxy_ticker] > 0, data[bench_ticker] / data[dxy_ticker], data[bench_ticker]), index=data.index)
         
-        # RsRank (Bench)
         roc_adj = (0.4 * adj_bench.pct_change(63) + 0.2 * adj_bench.pct_change(126) + 
                    0.2 * adj_bench.pct_change(189) + 0.2 * adj_bench.pct_change(252)) * 100
 
@@ -123,7 +124,12 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
 
     with st.spinner("Skorlar Hesaplanıyor..."):
         results = []
-        bl = ["bank", "financial", "credit", "crypto", "gambling", "banka", "finans", "sigorta", "yatırım"]
+        bl = ["bank", "financial", "credit", "crypto", "gambling", "banka", "finans", "sigorta", "yatırım", "menkul", "faktoring"]
+        
+        # Medyan F/K (Yedek karşılaştırma için)
+        all_fwd_pes = [d["fwd"] for d in f_data.values() if pd.notna(d["fwd"])]
+        avg_basket_fwd = np.median(all_fwd_pes) if all_fwd_pes else 20.0
+        
         for s in tickers:
             if s not in data.columns or data[s].isnull().all(): continue
             inf = f_data.get(s, {"trail": np.nan, "fwd": np.nan, "sec": "Bilinmiyor"})
@@ -139,24 +145,38 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
             beta = (ret.corr(iret) * (ret.std() / iret.std())) if iret.std() > 0 else 1.0
             ideal = (rs + (rs / max(0.1, beta))) / 2.0
 
-            # Çift Ucuzluk
+            # --- HİBRİT TEMEL UCUZLUK ---
             t_pe, f_pe = inf["trail"], inf["fwd"]
-            growth_chp = f_pe / t_pe if pd.notna(t_pe) and pd.notna(f_pe) and t_pe > 0 else np.nan
+            if pd.notna(t_pe) and pd.notna(f_pe) and t_pe > 0:
+                # Kendi büyümesine göre ucuzluk
+                growth_chp = f_pe / t_pe
+            elif pd.notna(f_pe):
+                # Geçmiş yoksa sepet ortalamasına göre ucuzluk
+                growth_chp = f_pe / avg_basket_fwd
+            else:
+                growth_chp = np.nan
+
+            # Teknik Ucuzluk (Fiyat / Ort)
             hist_chp = data[s].iloc[-1] / data[s].tail(lookback).mean() if len(data[s]) >= lookback else -999
 
             results.append({
                 "Hisse": s.replace(".IS", ""), "Sektör": inf["sec"], "Saf Oran": rs, "Beta": beta,
-                "İdealite": ideal, "Geçmiş F/K": t_pe,
-                "Temel Ucuzluk (Büyüme)": growth_chp, "Teknik Ucuzluk (Tarihsel)": hist_chp
+                "İdealite": ideal, "Geçmiş F/K": t_pe, "İleri F/K": f_pe,
+                "Temel Ucuzluk": growth_chp, "Teknik Ucuzluk": hist_chp
             })
 
     if results:
         res_df = pd.DataFrame(results).sort_values("İdealite", ascending=False).reset_index(drop=True)
-        st.dataframe(res_df.style.background_gradient(cmap='RdYlGn_r', subset=['Temel Ucuzluk (Büyüme)'], vmin=0.5, vmax=1.5)
-                     .background_gradient(cmap='RdYlGn_r', subset=['Teknik Ucuzluk (Tarihsel)'], vmin=0.7, vmax=1.3).format({
-            "Saf Oran": "{:.2f}", "Beta": "{:.2f}", "İdealite": "{:.2f}", "Geçmiş F/K": "{:.2f}",
-            "Temel Ucuzluk (Büyüme)": "{:.2f}", 
-            "Teknik Ucuzluk (Tarihsel)": lambda x: "IPO" if x == -999 else (f"{x:.2f}" if pd.notna(x) else "Veri Yok")
+        st.write(f"**Referans İleri F/K (Sepet Medyanı):** `{round(avg_basket_fwd, 2)}`")
+        
+        st.dataframe(res_df.style.background_gradient(cmap='RdYlGn_r', subset=['Temel Ucuzluk'], vmin=0.5, vmax=1.5)
+                     .background_gradient(cmap='RdYlGn_r', subset=['Teknik Ucuzluk'], vmin=0.7, vmax=1.3).format({
+            "Saf Oran": "{:.2f}", "Beta": "{:.2f}", "İdealite": "{:.2f}", 
+            "Geçmiş F/K": "{:.2f}", "İleri F/K": "{:.2f}",
+            "Temel Ucuzluk": "{:.2f}", 
+            "Teknik Ucuzluk": lambda x: "IPO" if x == -999 else (f"{x:.2f}" if pd.notna(x) else "Veri Yok")
         }, na_rep="Veri Yok"), use_container_width=True, height=800)
         with st.expander("Loglar"):
             for l in debug_logs: st.write(l)
+    else:
+        st.error("Veri bulunamadı.")
