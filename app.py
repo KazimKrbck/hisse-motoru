@@ -33,7 +33,7 @@ def check_password():
 check_password()
 
 st.title("🦅 Alpha-Hunt: Çift Katmanlı Değerleme & RS Motoru")
-st.info(f"⏱️ **Sistem Hazır.** | 🖥️ Son Güncelleme: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | *Not: Tablolar alt alta görünüyorsa tarayıcınızı tam ekran yapın.*")
+st.info(f"⏱️ **Sistem Hazır.** | 🖥️ Son Güncelleme: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 # --- 2. HAYALET OTURUM (STEALTH SESSION) ---
 USER_AGENTS = [
@@ -54,12 +54,12 @@ def get_stealth_session():
 if "http_session" not in st.session_state:
     st.session_state.http_session = get_stealth_session()
 
-# --- 3. GİRDİLER VE GEMINI YZ YAPISI ---
+# --- 3. GİRDİLER VE GEMINI ---
 st.sidebar.header("Parametreler")
 bist_mode = st.sidebar.checkbox("🇹🇷 BIST Modu", value=False)
 
 if "current_tickers" not in st.session_state:
-    st.session_state.current_tickers = "THYAO, TUPRS, KCHOL, EREGL" if bist_mode else "AAPL, MSFT, NVDA, AVGO, META, TSLA, CVNA, PLTR, SHOP, HOOD"
+    st.session_state.current_tickers = "AAPL, NVDA, TSLA, CVNA, PLTR, SHOP, HOOD"
 
 uploaded_file = st.sidebar.file_uploader("Resim Yükle", type=["png", "jpg", "jpeg"])
 if uploaded_file and "GEMINI_API_KEY" in st.secrets:
@@ -83,7 +83,7 @@ raw_tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
 tickers = [t + ".IS" if bist_mode and not t.endswith(".IS") else t for t in raw_tickers]
 tickers = list(dict.fromkeys(tickers))
 
-# --- 4. ÇAPRAZ KONTROLLÜ VERİ MOTORU ---
+# --- 4. VERİ MOTORU ---
 @st.cache_data(ttl=3600)
 def get_prices(ticks): 
     return yf.download(ticks, period="4y", interval="1d", progress=False)["Close"]
@@ -92,12 +92,10 @@ def get_prices(ticks):
 def get_advanced_fundamentals(sym, is_bist):
     sec = "Bilinmiyor"
     f_pe, ps, peg, roe = np.nan, np.nan, np.nan, np.nan
-    
     try:
         yq_info = YQTicker(sym).summary_detail.get(sym, {})
         if isinstance(yq_info, dict):
             f_pe = yq_info.get('forwardPE', np.nan)
-        
         info = yf.Ticker(sym).info
         sec = info.get('sector', 'Bilinmiyor')
         if pd.isna(f_pe): f_pe = info.get('forwardPE', np.nan)
@@ -128,14 +126,11 @@ def get_advanced_fundamentals(sym, is_bist):
 
     if pd.notna(f_pe) and (f_pe <= 0 or f_pe > 900): f_pe = np.nan
     if pd.notna(ps) and (ps <= 0 or ps > 500): ps = np.nan
-    
     return f_pe, ps, peg, roe, sec
 
-# DİNAMİK AĞIRLIKLI ALPHA PUANLAMASI (Kayıp veriyi telafi eder)
+# DİNAMİK AĞIRLIKLI ALPHA (EKSİK VERİ TELAFİLİ)
 def calculate_alpha_score(ps, peg, roe):
-    scores = {}
-    weights = {}
-
+    scores, weights = {}, {}
     if pd.notna(ps):
         scores['ps'] = 100 if ps < 1.5 else (80 if ps < 3 else (50 if ps < 6 else 20))
         weights['ps'] = 0.40
@@ -145,38 +140,35 @@ def calculate_alpha_score(ps, peg, roe):
     if pd.notna(roe):
         scores['roe'] = 100 if roe > 25 else (80 if roe > 15 else (50 if roe > 5 else 0))
         weights['roe'] = 0.30
-        
     if not scores: return np.nan
-
     total_active_weight = sum(weights.values())
     final_score = 0
     for key in scores:
-        normalized_weight = weights[key] / total_active_weight
-        final_score += scores[key] * normalized_weight
-        
+        final_score += scores[key] * (weights[key] / total_active_weight)
     return final_score
 
 # --- 5. ANALİZ DÖNGÜSÜ ---
 if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
     with st.spinner("Piyasa fiyatlamaları indiriliyor..."):
         data = get_prices(tickers + [bench_ticker, dxy_ticker]).ffill().dropna(subset=[bench_ticker])
-        p_idx, p_dxy = data[bench_ticker], data[dxy_ticker]
+        p_idx = data[bench_ticker]
     
     results = []
     progress_bar = st.progress(0)
-    status_text = st.empty()
+    # --- DEBUG SATIRI BAŞLANGIÇ ---
+    debug_container = st.empty()
+    st.write("---") 
+    # --- DEBUG SATIRI BİTİŞ ---
     
     total = len(tickers)
     for i, s in enumerate(tickers):
-        status_text.text(f"Analiz ediliyor: {s} ({i+1}/{total})")
+        now_ts = datetime.now().strftime('%H:%M:%S')
+        debug_container.code(f"[{now_ts}] ANALİZ EDİLİYOR: {s} | SIRA: {i+1}/{total}")
         
         f_pe, ps, peg, roe, sec = get_advanced_fundamentals(s, bist_mode)
         alpha = calculate_alpha_score(ps, peg, roe)
         
-        time.sleep(random.uniform(1.0, 2.5))
-        if (i + 1) % 15 == 0:
-            status_text.text("Sunucular soğutuluyor... (15 hisse tamamlandı)")
-            time.sleep(5.0)
+        time.sleep(random.uniform(1.0, 2.0))
         
         if s in data.columns:
             p_close = data[s].dropna()
@@ -197,66 +189,41 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
         })
         progress_bar.progress((i + 1) / total)
     
-    status_text.empty()
-    progress_bar.empty()
-
-    # Varsayılan olarak İdealiteye göre sırala (Veriyi ana omurgaya oturtur)
+    debug_container.success(f"[{datetime.now().strftime('%H:%M:%S')}] ANALİZ TAMAMLANDI.")
+    
+    # --- 6. GÖRSELLEŞTİRME VE TABLOLAR ---
     df_master = pd.DataFrame(results).sort_values("İdealite (RS Rank)", ascending=False).reset_index(drop=True)
     df_master.index += 1
     
-    df_momentum = df_master[["Hisse", "Sektör", "İdealite (RS Rank)", "Teknik Ucuzluk"]]
-    df_alpha = df_master[["Hisse", "Alpha Puanı", "Güncel P/S", "Fwd PEG", "ROE (%)", "İleri F/K"]]
-
-    # Ekranda yan yana duracak 2 sütun
     col1, col2 = st.columns(2)
-    
     with col1:
         st.subheader("🔥 Tablo 1: İdealite (RS Rank)")
-        st.caption("ℹ️ **İdealite:** Son 63 günlük momentumun hissenin Beta'sına bölümüdür. **Teknik Ucuzluk:** Güncel fiyatın 500 günlük ortalamaya oranıdır.")
-        styled_momentum = (df_momentum.style
-                           .set_properties(**{'text-align': 'left'})
-                           .background_gradient(cmap='RdYlGn_r', subset=['Teknik Ucuzluk'], vmin=0.7, vmax=1.3)
-                           .format({
-                               "İdealite (RS Rank)": "{:.2f}",
-                               "Teknik Ucuzluk": lambda x: "IPO" if x == -999 else (f"{x:.2f}" if pd.notna(x) else "Veri Yok")
-                           }, na_rep="Veri Yok"))
-        st.dataframe(styled_momentum, use_container_width=True)
+        st.caption("ℹ️ **İdealite:** Momentum/Beta rasyosudur. **Teknik Ucuzluk:** Fiyatın 500 günlük ortalamaya oranıdır.")
+        st.dataframe(df_master[["Hisse", "Sektör", "İdealite (RS Rank)", "Teknik Ucuzluk"]].style
+                     .set_properties(**{'text-align': 'left'})
+                     .background_gradient(cmap='RdYlGn_r', subset=['Teknik Ucuzluk'], vmin=0.7, vmax=1.3)
+                     .format({"İdealite (RS Rank)": "{:.2f}", "Teknik Ucuzluk": lambda x: "IPO" if x == -999 else f"{x:.2f}"}), use_container_width=True)
 
     with col2:
         st.subheader("🌟 Tablo 2: Alpha Puanı & Temeller")
-        st.caption("ℹ️ **Dinamik Alpha:** Bir veri (örn. PEG) eksikse sistemi bozmaz; eksik verinin ağırlığı P/S ve ROE'ye eşit dağıtılır.")
-        styled_alpha = (df_alpha.style
-                        .set_properties(**{'text-align': 'left'})
-                        .background_gradient(cmap='Greens', subset=['Alpha Puanı'], vmin=0, vmax=100)
-                        .background_gradient(cmap='RdYlGn_r', subset=['Güncel P/S'], vmin=1, vmax=8)
-                        .background_gradient(cmap='RdYlGn_r', subset=['Fwd PEG'], vmin=0.5, vmax=3.0)
-                        .background_gradient(cmap='RdYlGn', subset=['ROE (%)'], vmin=-10, vmax=40)
-                        .format({
-                            "Alpha Puanı": "{:.0f}", "Güncel P/S": "{:.2f}x", "Fwd PEG": "{:.2f}",
-                            "ROE (%)": "{:.1f}%", "İleri F/K": "{:.1f}"
-                        }, na_rep="Veri Yok"))
-        st.dataframe(styled_alpha, use_container_width=True)
+        st.caption("ℹ️ **Dinamik Alpha:** Eksik verilerin ağırlığını mevcut verilere dağıtan akıllı puanlama sistemidir.")
+        st.dataframe(df_master[["Hisse", "Alpha Puanı", "Güncel P/S", "Fwd PEG", "ROE (%)", "İleri F/K"]].style
+                     .set_properties(**{'text-align': 'left'})
+                     .background_gradient(cmap='Greens', subset=['Alpha Puanı'], vmin=0, vmax=100)
+                     .background_gradient(cmap='RdYlGn_r', subset=['Güncel P/S'], vmin=1, vmax=8)
+                     .format({"Alpha Puanı": "{:.0f}", "Güncel P/S": "{:.2f}x", "ROE (%)": "{:.1f}%"}), use_container_width=True)
 
-    # --- 6. DİNAMİK TRADINGVIEW ÇIKTILARI ---
+    # --- 7. DİNAMİK TRADINGVIEW ÇIKTILARI ---
     st.divider()
     st.subheader("📋 TradingView Aktarım Listeleri")
-    
-    # Kullanıcıya çıktının neye göre dizileceğini soruyoruz (Varsayılan RS Rank)
-    sort_option = st.radio(
-        "Listeleri Kopyalamadan Önce Hangi Kriter Göre Sıralamak İstersiniz?", 
-        ["İdealite (RS Rank)", "Alpha Puanı", "Güncel P/S", "ROE (%)"], 
-        horizontal=True
-    )
-    
-    # Küçükten büyüğe mi, büyükten küçüğe mi? (P/S küçük iyidir, diğerleri büyük)
-    ascending_order = True if sort_option == "Güncel P/S" else False
-    df_export = df_master.sort_values(by=sort_option, ascending=ascending_order)
+    sort_option = st.radio("Listeleri Kopyalamadan Önce Kriter Seçin:", ["İdealite (RS Rank)", "Alpha Puanı", "Güncel P/S", "ROE (%)"], horizontal=True)
+    df_export = df_master.sort_values(by=sort_option, ascending=(True if sort_option == "Güncel P/S" else False))
     
     prefix = "BIST:" if bist_mode else "NASDAQ:"
     c3, c4 = st.columns(2)
     with c3:
-        st.success(f"**TradingView Takip Listesi (Watchlist) • {sort_option} Sıralı**")
+        st.success(f"**TradingView Takip Listesi • {sort_option} Sıralı**")
         st.code(",".join([f"{prefix}{sym}" for sym in df_export["Hisse"].tolist()]), language="text")
     with c4:
-        st.info(f"**TradingView Isı Haritası Girdisi (İlk 38) • {sort_option} Sıralı**")
+        st.info(f"**TradingView Isı Haritası (İlk 38) • {sort_option} Sıralı**")
         st.code(" \n".join([f"{i+1}. {sym}" for i, sym in enumerate(df_export["Hisse"].head(38))]), language="text")
