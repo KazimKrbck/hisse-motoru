@@ -14,6 +14,7 @@ from PIL import Image
 from datetime import datetime
 
 # --- 1. SAYFA AYARLARI VE GÜVENLİK ---
+# DİKKAT: layout="wide" komutu tabloların yan yana durması için hayatidir.
 st.set_page_config(page_title="Alpha-Hunt Motoru", layout="wide", initial_sidebar_state="expanded")
 
 def check_password():
@@ -33,7 +34,7 @@ def check_password():
 check_password()
 
 st.title("🦅 Alpha-Hunt: Çift Katmanlı Değerleme & RS Motoru")
-st.info(f"⏱️ **Sistem Hazır.** | 🖥️ Son Güncelleme: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | *Not: Tablolar alt alta görünüyorsa tarayıcınızı tam ekran yapın.*")
+st.info(f"⏱️ **Sistem Hazır.** | 🖥️ Son Güncelleme: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | *Not: Tablolar alt alta görünüyorsa tarayıcınızı tam ekran yapın veya CTRL ve Eksi(-) tuşlarıyla sayfayı biraz uzaklaştırın.*")
 
 # --- 2. HAYALET OTURUM (STEALTH SESSION) ---
 USER_AGENTS = [
@@ -195,16 +196,20 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
     progress_bar.empty()
 
     # --- 6. GÖRSELLEŞTİRME VE TABLOLAR ---
-    # DataFrame oluşturulur ve İdealiteye göre sıralanır (Satır eşitliği için)
+    # DataFrame oluşturulur ve İdealiteye (Momentuma) göre sıralanır (Satır eşitliği için)
     df_master = pd.DataFrame(results).sort_values("İdealite (RS Rank)", ascending=False).reset_index(drop=True)
     df_master.index += 1
     
-    df_alpha = df_master[["Hisse", "Alpha Puanı", "Güncel P/S", "Fwd PEG", "ROE (%)", "İleri F/K"]]
+    # İki ayrı tablo veri çerçevesi (sütunları ayırıyoruz)
     df_momentum = df_master[["Hisse", "Sektör", "İdealite (RS Rank)", "Teknik Ucuzluk"]]
-    # Sütunlar oluşturulur
+    df_alpha = df_master[["Hisse", "Alpha Puanı", "Güncel P/S", "Fwd PEG", "ROE (%)", "İleri F/K"]]
+
+    # Ekranda yan yana duracak 2 sütun (kolon) oluşturuyoruz
     col1, col2 = st.columns(2)
     
+    # -----------------------------------------------------------
     # SOL TARAF (col1): Tablo 1 (İdealite / RS Rank)
+    # -----------------------------------------------------------
     with col1:
         st.subheader("🔥 Tablo 1: İdealite (RS Rank)")
         styled_momentum = (df_momentum.style
@@ -216,7 +221,9 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
                            }, na_rep="Veri Yok"))
         st.dataframe(styled_momentum, use_container_width=True)
 
+    # -----------------------------------------------------------
     # SAĞ TARAF (col2): Tablo 2 (Alpha Puanı / Temel Analiz)
+    # -----------------------------------------------------------
     with col2:
         st.subheader("🌟 Tablo 2: Alpha Puanı & Temeller")
         styled_alpha = (df_alpha.style
@@ -230,12 +237,6 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
                             "ROE (%)": "{:.1f}%", "İleri F/K": "{:.1f}"
                         }, na_rep="Veri Yok"))
         st.dataframe(styled_alpha, use_container_width=True)
-    cmap='RdYlGn_r', subset=['Teknik Ucuzluk'], vmin=0.7, vmax=1.3)
-                           .format({
-                               "İdealite (RS Rank)": "{:.2f}",
-                               "Teknik Ucuzluk": lambda x: "IPO" if x == -999 else (f"{x:.2f}" if pd.notna(x) else "Veri Yok")
-                           }, na_rep="Veri Yok"))
-        st.dataframe(styled_momentum, use_container_width=True)
 
     # --- 7. ÇIKTILAR ---
     st.divider()
