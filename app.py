@@ -76,7 +76,7 @@ bist_mode = st.sidebar.checkbox("🇹🇷 BIST Modu", value=False)
 if "current_tickers" not in st.session_state:
     st.session_state.current_tickers = "AAPL, NVDA, TSLA, CVNA, PLTR, SHOP, HOOD"
 
-uploaded_file = st.sidebar.file_uploader("Resim Yükle", type=["png", "jpg", "jpeg"])
+uploaded_file = st.sidebar.file_uploader("Hisselerin Ekran Resmini Geminiye Yükle", type=["png", "jpg", "jpeg"])
 if uploaded_file and "GEMINI_API_KEY" in st.secrets:
     if st.sidebar.button("✨ Resmi Oku"):
         with st.spinner("Yapay Zeka resmi inceliyor..."):
