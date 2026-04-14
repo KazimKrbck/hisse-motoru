@@ -32,194 +32,158 @@ def check_password():
 
 check_password()
 
-st.title("🦅 Alpha-Hunt: Çift Katmanlı Değerleme & RS Motoru")
+st.title("🦅 Alpha-Hunt: Değerleme & RS Motoru (PEG-Free)")
 st.info(f"⏱️ **Sistem Hazır.** | 🖥️ Son Güncelleme: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 # --- 2. HAYALET OTURUM (STEALTH SESSION) ---
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Safari/605.1.15",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0"
 ]
 
 def get_stealth_session():
     session = requests.Session()
     retry = Retry(connect=3, backoff_factor=1.5, status_forcelist=[429, 500, 502, 503, 504])
     adapter = HTTPAdapter(max_retries=retry)
-    session.mount('http://', adapter)
     session.mount('https://', adapter)
     return session
 
 if "http_session" not in st.session_state:
     st.session_state.http_session = get_stealth_session()
 
-# --- 3. GİRDİLER VE GEMINI ---
+# --- 3. DİNAMİK ALPHA PUANLAMA (P/S %50, ROE %30, F/K %20) ---
+def calculate_alpha_score(ps, roe, f_pe):
+    scores, weights = {}, {}
+    
+    # P/S Puanı (%50) - Düşük iyi
+    if pd.notna(ps) and ps > 0:
+        scores['ps'] = 100 if ps < 2 else (80 if ps < 5 else (40 if ps < 10 else 10))
+        weights['ps'] = 0.50
+        
+    # ROE Puanı (%30) - Yüksek iyi
+    if pd.notna(roe):
+        scores['roe'] = 100 if roe > 25 else (70 if roe > 10 else (30 if roe > 0 else 0))
+        weights['roe'] = 0.30
+        
+    # İleri F/K Puanı (%20) - Makul düzey iyi
+    if pd.notna(f_pe) and f_pe > 0:
+        scores['fpe'] = 100 if f_pe < 20 else (70 if f_pe < 40 else (40 if f_pe < 70 else 10))
+        weights['fpe'] = 0.20
+    
+    if not scores: return np.nan
+    
+    total_active_weight = sum(weights.values())
+    return sum(scores[k] * (weights[k] / total_active_weight) for k in scores)
+
+# --- 4. GİRDİLER VE GEMINI ---
 st.sidebar.header("Parametreler")
 bist_mode = st.sidebar.checkbox("🇹🇷 BIST Modu", value=False)
-
-if "current_tickers" not in st.session_state:
-    st.session_state.current_tickers = "AAPL, NVDA, TSLA, CVNA, PLTR, SHOP, HOOD"
-
-uploaded_file = st.sidebar.file_uploader("Resim Yükle", type=["png", "jpg", "jpeg"])
-if uploaded_file and "GEMINI_API_KEY" in st.secrets:
-    if st.sidebar.button("✨ Resmi Oku"):
-        with st.spinner("Yapay Zeka resmi inceliyor..."):
-            try:
-                genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-                model = genai.GenerativeModel('gemini-2.5-flash')
-                response = model.generate_content(["Tickerları virgülle ver. Başka hiçbir kelime yazma.", Image.open(uploaded_file)])
-                st.session_state.current_tickers = response.text.strip()
-                st.rerun()
-            except Exception as e:
-                st.sidebar.error(f"YZ Bağlantı Hatası: {e}")
-
-tickers_input = st.sidebar.text_area("Hisseler", st.session_state.current_tickers, height=150)
+tickers_input = st.sidebar.text_area("Hisseler", st.session_state.get('current_tickers', 'AAPL, NVDA, CVNA, PLTR, SHOP'), height=150)
 bench_ticker = st.sidebar.text_input("Endeks", "XU100.IS" if bist_mode else "^GSPC")
-lookback = st.sidebar.number_input("LookBack (Gün)", value=500)
+lookback = st.sidebar.number_input("LookBack", value=500)
 
 raw_tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
 tickers = [t + ".IS" if bist_mode and not t.endswith(".IS") else t for t in raw_tickers]
 tickers = list(dict.fromkeys(tickers))
 
-# --- 4. GELİŞMİŞ VERİ MOTORU ---
-@st.cache_data(ttl=86400)
-def get_advanced_fundamentals(sym, is_bist):
-    sec = "Bilinmiyor"
-    f_pe, ps, peg, roe = np.nan, np.nan, np.nan, np.nan
-    
-    try:
-        yq = YQTicker(sym)
-        sd = yq.summary_detail.get(sym, {})
-        if isinstance(sd, dict):
-            f_pe = sd.get('forwardPE', np.nan)
-            ps = sd.get('priceToSalesTrailing12Months', np.nan)
-        ks = yq.key_stats.get(sym, {})
-        if isinstance(ks, dict):
-            peg = ks.get('pegRatio', np.nan)
-        fd = yq.financial_data.get(sym, {})
-        if isinstance(fd, dict):
-            roe = fd.get('returnOnEquity', np.nan)
-            if pd.notna(roe): roe = roe * 100
-        ap = yq.asset_profile.get(sym, {})
-        if isinstance(ap, dict):
-            sec = ap.get('sector', 'Bilinmiyor')
-    except: pass
-
-    # Finviz Fallback (Sağlam Regex ile)
-    if not is_bist and (pd.isna(ps) or pd.isna(peg) or pd.isna(roe)):
-        try:
-            headers = {"User-Agent": random.choice(USER_AGENTS), "Referer": "https://finviz.com/"}
-            res = st.session_state.http_session.get(f"https://finviz.com/quote.ashx?t={sym}", headers=headers, timeout=10)
-            if res.status_code == 200:
-                html = res.text
-                if pd.isna(ps):
-                    m = re.search(r'P/S.*?<b>\s*(.*?)\s*</b>', html, re.S)
-                    if m and m.group(1) != '-': ps = float(m.group(1))
-                if pd.isna(peg):
-                    m = re.search(r'PEG.*?<b>\s*(.*?)\s*</b>', html, re.S)
-                    if m and m.group(1) != '-': peg = float(m.group(1))
-                if pd.isna(roe):
-                    m = re.search(r'ROE.*?<b>\s*(.*?)\s*%?\s*</b>', html, re.S)
-                    if m and m.group(1) != '-': roe = float(m.group(1).replace('%', ''))
-        except: pass
-
-    if pd.notna(f_pe) and (f_pe <= 0 or f_pe > 900): f_pe = np.nan
-    if pd.notna(ps) and (ps <= 0 or ps > 500): ps = np.nan
-    return f_pe, ps, peg, roe, sec
-
-# DİNAMİK AĞIRLIKLI ALPHA (Eksik Veri Telafili)
-def calculate_alpha_score(ps, peg, roe):
-    scores, weights = {}, {}
-    if pd.notna(ps):
-        scores['ps'] = 100 if ps < 1.5 else (80 if ps < 3 else (50 if ps < 6 else 20))
-        weights['ps'] = 0.40
-    if pd.notna(peg):
-        scores['peg'] = 100 if peg < 1 else (75 if peg < 1.5 else (40 if peg < 2.5 else 10))
-        weights['peg'] = 0.30
-    if pd.notna(roe):
-        scores['roe'] = 100 if roe > 25 else (80 if roe > 15 else (50 if roe > 5 else 0))
-        weights['roe'] = 0.30
-    
-    if not scores: return np.nan
-    total_active_weight = sum(weights.values())
-    final_score = sum(scores[k] * (weights[k] / total_active_weight) for k in scores)
-    return final_score
-
 # --- 5. ANALİZ DÖNGÜSÜ ---
 if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
-    with st.spinner("Fiyatlar indiriliyor..."):
+    with st.spinner("Piyasa fiyatlamaları indiriliyor..."):
         data = yf.download(tickers + [bench_ticker], period="4y", interval="1d", progress=False)["Close"].ffill()
-        p_idx = data[bench_ticker]
     
     results = []
     progress_bar = st.progress(0)
-    debug_container = st.empty()
+    debug_area = st.empty()
     st.write("---")
     
     total = len(tickers)
     for i, s in enumerate(tickers):
-        now_ts = datetime.now().strftime('%H:%M:%S')
-        debug_container.code(f"[{now_ts}] ANALİZ: {s} | {i+1}/{total}")
+        now = datetime.now().strftime('%H:%M:%S')
         
-        f_pe, ps, peg, roe, sec = get_advanced_fundamentals(s, bist_mode)
-        alpha = calculate_alpha_score(ps, peg, roe)
+        # 1. Debug Satırı: Başvuru
+        debug_msg = f"[{now}] 🔍 TALEP: {s} -> YahooQuery & Finviz Sorgulanıyor..."
         
-        time.sleep(random.uniform(1.0, 2.0))
-        if (i + 1) % 15 == 0: time.sleep(5.0) # Chunking dinlenmesi
-        
-        if s in data.columns:
-            p_close = data[s].dropna()
-            if len(p_close) > 63:
-                rs = (p_close.pct_change(63).tail(lookback).sum()) 
-                beta = p_close.pct_change().corr(p_idx.pct_change())
-                ideal = rs / max(0.1, beta)
-                hist_chp = p_close.iloc[-1] / p_close.tail(lookback).mean() if len(p_close) >= lookback else -999
-            else: rs, beta, ideal, hist_chp = 0, 1, 0, -999
-        else: ideal, hist_chp = 0, -999
+        # Veri Çekme (Öncelik YahooQuery)
+        f_pe, ps, roe, sec = np.nan, np.nan, np.nan, "Bilinmiyor"
+        try:
+            yq = YQTicker(s)
+            sd = yq.summary_detail.get(s, {})
+            f_pe = sd.get('forwardPE', np.nan)
+            ps = sd.get('priceToSalesTrailing12Months', np.nan)
+            roe = yq.financial_data.get(s, {}).get('returnOnEquity', np.nan)
+            if pd.notna(roe): roe *= 100
+            sec = yq.asset_profile.get(s, {}).get('sector', 'Bilinmiyor')
+        except: pass
 
-        results.append({
-            "Hisse": s.replace(".IS", ""), "Sektör": sec, "İdealite (RS Rank)": ideal,
-            "Teknik Ucuzluk": hist_chp, "Alpha Puanı": alpha, "Güncel P/S": ps,
-            "Fwd PEG": peg, "ROE (%)": roe, "İleri F/K": f_pe
-        })
-        progress_bar.progress((i + 1) / total)
-    
-    debug_container.success(f"[{datetime.now().strftime('%H:%M:%S')}] ANALİZ TAMAMLANDI.")
-    
-    df_master = pd.DataFrame(results).sort_values("İdealite (RS Rank)", ascending=False).reset_index(drop=True)
+        # Finviz Fallback (Sağlam Regex ile)
+        if not bist_mode and (pd.isna(ps) or pd.isna(roe)):
+            try:
+                headers = {"User-Agent": random.choice(USER_AGENTS), "Referer": "https://finviz.com/"}
+                res = st.session_state.http_session.get(f"https://finviz.com/quote.ashx?t={s}", headers=headers, timeout=10)
+                if res.status_code == 200:
+                    if pd.isna(ps):
+                        m = re.search(r'P/S.*?<b>\s*(.*?)\s*</b>', res.text, re.S)
+                        if m and m.group(1) != '-': ps = float(m.group(1))
+                    if pd.isna(roe):
+                        m = re.search(r'ROE.*?<b>\s*(.*?)\s*%?\s*</b>', res.text, re.S)
+                        if m and m.group(1) != '-': roe = float(m.group(1).replace('%', ''))
+            except: pass
+
+        # 2. Debug Satırı: Sonuç
+        res_status = "✅ BAŞARILI" if pd.notna(ps) else "⚠️ EKSİK VERİ"
+        debug_msg += f"\n[{now}] {res_status}: P/S:{ps if pd.notna(ps) else 'N/A'} | ROE:{roe if pd.notna(roe) else 'N/A'} | F/K:{f_pe if pd.notna(f_pe) else 'N/A'}"
+        debug_area.code(debug_msg)
+
+        alpha = calculate_alpha_score(ps, roe, f_pe)
+        time.sleep(random.uniform(1.0, 2.0))
+        
+        # RS Rank (Momentum) Hesaplaması
+        ideal = 0
+        if s in data.columns:
+            p = data[s].dropna()
+            if len(p) > 63:
+                rs = p.pct_change(63).tail(lookback).sum()
+                beta = p.pct_change().corr(data[bench_ticker].pct_change())
+                ideal = rs / max(0.1, beta)
+
+        results.append({"Hisse": s.replace(".IS",""), "Alpha Puanı": alpha, "Güncel P/S": ps, "ROE (%)": roe, "İleri F/K": f_pe, "İdealite": ideal, "Sektör": sec})
+        progress_bar.progress((i+1)/total)
+
+    # --- 6. GÖRSELLEŞTİRME ---
+    df_master = pd.DataFrame(results).sort_values("İdealite", ascending=False).reset_index(drop=True)
     df_master.index += 1
     
-    # --- 6. TABLOLAR (SOL: RS RANK, SAĞ: ALPHA) ---
     col1, col2 = st.columns(2)
     with col1:
         st.subheader("🔥 Tablo 1: İdealite (RS Rank)")
-        st.caption("ℹ️ **Teknik:** Momentum/Beta ve 500 günlük ortalamaya göre teknik ucuzluk.")
-        st.dataframe(df_master[["Hisse", "Sektör", "İdealite (RS Rank)", "Teknik Ucuzluk"]].style
+        st.caption("ℹ️ **Teknik:** Momentum/Beta rasyosu. Trenddeki en güçlü hisseleri zirveye taşır.")
+        st.dataframe(df_master[["Hisse", "Sektör", "İdealite"]].style
                      .set_properties(**{'text-align': 'left'})
-                     .background_gradient(cmap='RdYlGn_r', subset=['Teknik Ucuzluk'], vmin=0.7, vmax=1.3)
-                     .format({"İdealite (RS Rank)": "{:.2f}", "Teknik Ucuzluk": lambda x: "IPO" if x == -999 else f"{x:.2f}"}), use_container_width=True)
+                     .background_gradient(cmap='RdYlGn', subset=['İdealite']), use_container_width=True)
 
     with col2:
         st.subheader("🌟 Tablo 2: Alpha Puanı & Temeller")
-        st.caption("ℹ️ **Dinamik Alpha:** Veri eksikliğinde ağırlığı otomatik dengeleyen akıllı puanlama.")
-        st.dataframe(df_master[["Hisse", "Alpha Puanı", "Güncel P/S", "Fwd PEG", "ROE (%)", "İleri F/K"]].style
+        st.caption("ℹ️ **Alpha:** P/S (%50), ROE (%30), F/K (%20). Eksik veri ağırlığı diğerlerine dağıtılır.")
+        st.dataframe(df_master[["Hisse", "Alpha Puanı", "Güncel P/S", "ROE (%)", "İleri F/K"]].style
                      .set_properties(**{'text-align': 'left'})
                      .background_gradient(cmap='Greens', subset=['Alpha Puanı'], vmin=0, vmax=100)
                      .background_gradient(cmap='RdYlGn_r', subset=['Güncel P/S'], vmin=1, vmax=8)
-                     .format({"Alpha Puanı": "{:.0f}", "Güncel P/S": "{:.2f}x", "ROE (%)": "{:.1f}%", "Fwd PEG": "{:.2f}", "İleri F/K": "{:.2f}"}, na_rep="N/A"), use_container_width=True)
+                     .format({"Alpha Puanı": "{:.0f}", "Güncel P/S": "{:.2f}x", "ROE (%)": "{:.1f}%", "İleri F/K": "{:.1f}"}, na_rep="N/A"), use_container_width=True)
 
     # --- 7. DİNAMİK TRADINGVIEW AKTARIM ---
     st.divider()
     st.subheader("📋 TradingView Aktarım Listeleri")
-    sort_opt = st.radio("Kopyalama Öncesi Sıralama Kriteri:", ["İdealite (RS Rank)", "Alpha Puanı", "Güncel P/S", "ROE (%)"], horizontal=True)
-    df_export = df_master.sort_values(by=sort_opt, ascending=(sort_opt == "Güncel P/S"))
+    sort_opt = st.radio("Listeyi Kopyalamadan Önce Sıralama Seçin:", ["İdealite", "Alpha Puanı", "Güncel P/S"], horizontal=True)
     
-    prefix = "BIST:" if bist_mode else "NASDAQ:"
+    # Küçükten büyüğe mi (P/S için evet, diğerleri için hayır)
+    df_ex = df_master.sort_values(sort_opt, ascending=(sort_opt=="Güncel P/S"))
+    
     c3, c4 = st.columns(2)
+    prefix = "BIST:" if bist_mode else "NASDAQ:"
     with c3:
-        st.success(f"**TradingView Takip Listesi • {sort_opt} Sıralı**")
-        st.code(",".join([f"{prefix}{sym}" for sym in df_export["Hisse"].tolist()]), language="text")
+        st.success(f"**Takip Listesi ({sort_opt} Sıralı)**")
+        st.code(",".join([f"{prefix}{s}" for s in df_ex["Hisse"]]))
     with c4:
-        st.info(f"**TradingView Isı Haritası Girdisi (İlk 38) • {sort_opt} Sıralı**")
-        st.code(" \n".join([f"{i+1}. {sym}" for i, sym in enumerate(df_export["Hisse"].head(38))]), language="text")
+        st.info(f"**Isı Haritası Girdisi (İlk 38 - {sort_opt} Sıralı)**")
+        st.code(" \n".join([f"{i+1}. {sym}" for i, sym in enumerate(df_ex["Hisse"].head(38))]))
