@@ -33,9 +33,9 @@ def check_password():
 check_password()
 
 st.title("🦅 Alpha-Hunt: Çift Katmanlı Değerleme & RS Motoru")
-st.info(f"⏱️ **Sistem Hazır.** | 🖥️ Son Güncelleme: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+st.info(f"⏱️ **Sistem Hazır.** | 🖥️ Son Güncelleme: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | *Not: Tablolar alt alta görünüyorsa tarayıcınızı tam ekran yapın.*")
 
-# --- 2. HAYALET OTURUM (STEALTH SESSION) VE KORUMALAR ---
+# --- 2. HAYALET OTURUM (STEALTH SESSION) ---
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Safari/605.1.15",
@@ -45,7 +45,6 @@ USER_AGENTS = [
 
 def get_stealth_session():
     session = requests.Session()
-    # 429 veya 500'lü hatalarda 3 kez tekrar dener, aralarda bekler
     retry = Retry(connect=3, backoff_factor=1.5, status_forcelist=[429, 500, 502, 503, 504])
     adapter = HTTPAdapter(max_retries=retry)
     session.mount('http://', adapter)
@@ -94,7 +93,6 @@ def get_advanced_fundamentals(sym, is_bist):
     sec = "Bilinmiyor"
     f_pe, ps, peg, roe = np.nan, np.nan, np.nan, np.nan
     
-    # Adım 1: Yfinance & YahooQuery
     try:
         yq_info = YQTicker(sym).summary_detail.get(sym, {})
         if isinstance(yq_info, dict):
@@ -109,7 +107,6 @@ def get_advanced_fundamentals(sym, is_bist):
         if pd.notna(roe): roe = roe * 100 
     except: pass
 
-    # Adım 2: Finviz Fallback (Hayalet Modu ile sadece ABD Hisseleri)
     if not is_bist and (pd.isna(ps) or pd.isna(peg) or pd.isna(roe) or pd.isna(f_pe)):
         try:
             headers = {
@@ -134,22 +131,18 @@ def get_advanced_fundamentals(sym, is_bist):
                     if m and m.group(1) != '-': roe = float(m.group(1))
         except: pass
 
-    # Anlamsız/Hatalı verileri temizle
     if pd.notna(f_pe) and (f_pe <= 0 or f_pe > 900): f_pe = np.nan
     if pd.notna(ps) and (ps <= 0 or ps > 500): ps = np.nan
     
     return f_pe, ps, peg, roe, sec
 
 def calculate_alpha_score(ps, peg, roe):
-    # P/S Puanı (%40)
     p_ps = 0
     if pd.notna(ps):
         p_ps = 100 if ps < 1.5 else (80 if ps < 3 else (50 if ps < 6 else 20))
-    # PEG Puanı (%30)
     p_peg = 0
     if pd.notna(peg):
         p_peg = 100 if peg < 1 else (75 if peg < 1.5 else (40 if peg < 2.5 else 10))
-    # ROE Puanı (%30)
     p_roe = 0
     if pd.notna(roe):
         p_roe = 100 if roe > 25 else (80 if roe > 15 else (50 if roe > 5 else 0))
@@ -157,7 +150,7 @@ def calculate_alpha_score(ps, peg, roe):
     score = (p_ps * 0.4) + (p_peg * 0.3) + (p_roe * 0.3)
     return score if (pd.notna(ps) or pd.notna(peg) or pd.notna(roe)) else np.nan
 
-# --- 5. ANALİZ DÖNGÜSÜ (CHUNKING & BEKLEME) ---
+# --- 5. ANALİZ DÖNGÜSÜ ---
 if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
     with st.spinner("Piyasa fiyatlamaları indiriliyor..."):
         data = get_prices(tickers + [bench_ticker, dxy_ticker]).ffill().dropna(subset=[bench_ticker])
@@ -174,7 +167,6 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
         f_pe, ps, peg, roe, sec = get_advanced_fundamentals(s, bist_mode)
         alpha = calculate_alpha_score(ps, peg, roe)
         
-        # Dinamik Ban Koruması
         time.sleep(random.uniform(1.0, 2.5))
         if (i + 1) % 15 == 0:
             status_text.text("Sunucular soğutuluyor... (15 hisse tamamlandı)")
@@ -203,17 +195,18 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
     progress_bar.empty()
 
     # --- 6. GÖRSELLEŞTİRME VE TABLOLAR ---
-    # İdealite'ye (RS Rank) göre diz, her iki tablonun satır paritesini koru
+    # DataFrame oluşturulur ve İdealiteye göre sıralanır (Satır eşitliği için)
     df_master = pd.DataFrame(results).sort_values("İdealite (RS Rank)", ascending=False).reset_index(drop=True)
     df_master.index += 1
     
     df_alpha = df_master[["Hisse", "Alpha Puanı", "Güncel P/S", "Fwd PEG", "ROE (%)", "İleri F/K"]]
     df_momentum = df_master[["Hisse", "Sektör", "İdealite (RS Rank)", "Teknik Ucuzluk"]]
 
+    # Sütunlar oluşturulur
     col1, col2 = st.columns(2)
     
     with col1:
-        st.subheader("🌟 Tablo 2: Alpha Puanı & Temel Değerler")
+        st.subheader("🌟 Tablo 2: Alpha Puanı & Temeller")
         styled_alpha = (df_alpha.style
                         .set_properties(**{'text-align': 'left'})
                         .background_gradient(cmap='Greens', subset=['Alpha Puanı'], vmin=0, vmax=100)
@@ -224,11 +217,10 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
                             "Alpha Puanı": "{:.0f}", "Güncel P/S": "{:.2f}x", "Fwd PEG": "{:.2f}",
                             "ROE (%)": "{:.1f}%", "İleri F/K": "{:.1f}"
                         }, na_rep="Veri Yok"))
-        # Dinamik yükseklik: height parametresi silindi
         st.dataframe(styled_alpha, use_container_width=True)
 
     with col2:
-        st.subheader("🔥 Tablo 1: İdealite & Teknik (RS Rank)")
+        st.subheader("🔥 Tablo 1: İdealite (RS Rank)")
         styled_momentum = (df_momentum.style
                            .set_properties(**{'text-align': 'left'})
                            .background_gradient(cmap='RdYlGn_r', subset=['Teknik Ucuzluk'], vmin=0.7, vmax=1.3)
