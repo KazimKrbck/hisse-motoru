@@ -76,43 +76,50 @@ if uploaded_file and "GEMINI_API_KEY" in st.secrets:
 
 tickers_input = st.sidebar.text_area("Hisseler", st.session_state.current_tickers, height=150)
 bench_ticker = st.sidebar.text_input("Endeks", "XU100.IS" if bist_mode else "^GSPC")
-dxy_ticker = st.sidebar.text_input("DXY/Kur", "TRY=X" if bist_mode else "DX-Y.NYB")
 lookback = st.sidebar.number_input("LookBack (Gün)", value=500)
 
 raw_tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
 tickers = [t + ".IS" if bist_mode and not t.endswith(".IS") else t for t in raw_tickers]
 tickers = list(dict.fromkeys(tickers))
 
-# --- 4. VERİ MOTORU ---
-@st.cache_data(ttl=3600)
-def get_prices(ticks): 
-    return yf.download(ticks, period="4y", interval="1d", progress=False)["Close"]
-
+# --- 4. GELİŞMİŞ VERİ MOTORU (YAHOOQUERY DERİN TARAMA) ---
 @st.cache_data(ttl=86400)
 def get_advanced_fundamentals(sym, is_bist):
     sec = "Bilinmiyor"
     f_pe, ps, peg, roe = np.nan, np.nan, np.nan, np.nan
+    
     try:
-        yq_info = YQTicker(sym).summary_detail.get(sym, {})
-        if isinstance(yq_info, dict):
-            f_pe = yq_info.get('forwardPE', np.nan)
-        info = yf.Ticker(sym).info
-        sec = info.get('sector', 'Bilinmiyor')
-        if pd.isna(f_pe): f_pe = info.get('forwardPE', np.nan)
-        ps = info.get('priceToSalesTrailing12Months', np.nan)
-        peg = info.get('pegRatio', np.nan)
-        roe = info.get('returnOnEquity', np.nan)
-        if pd.notna(roe): roe = roe * 100 
+        yq = YQTicker(sym)
+        # Sektör ve Temel F/K, P/S (Summary Detail)
+        sd = yq.summary_detail.get(sym, {})
+        if isinstance(sd, dict):
+            f_pe = sd.get('forwardPE', np.nan)
+            ps = sd.get('priceToSalesTrailing12Months', np.nan)
+        
+        # Sektör Bilgisi (Asset Profile)
+        ap = yq.asset_profile.get(sym, {})
+        if isinstance(ap, dict):
+            sec = ap.get('sector', 'Bilinmiyor')
+        
+        # PEG Rasyosu (Key Statistics)
+        ks = yq.key_stats.get(sym, {})
+        if isinstance(ks, dict):
+            peg = ks.get('pegRatio', np.nan)
+        
+        # ROE (Financial Data)
+        fd = yq.financial_data.get(sym, {})
+        if isinstance(fd, dict):
+            roe = fd.get('returnOnEquity', np.nan)
+            if pd.notna(roe): roe = roe * 100
+            
     except: pass
 
-    if not is_bist and (pd.isna(ps) or pd.isna(peg) or pd.isna(roe) or pd.isna(f_pe)):
+    # Finviz Fallback (Eğer Yahoo verisi hala eksikse ve ABD hissesi ise)
+    if not is_bist and (pd.isna(ps) or pd.isna(peg) or pd.isna(roe)):
         try:
-            headers = {"User-Agent": random.choice(USER_AGENTS), "Accept-Language": "en-US,en;q=0.9", "Referer": "https://www.google.com/"}
+            headers = {"User-Agent": random.choice(USER_AGENTS), "Referer": "https://www.google.com/"}
             res = st.session_state.http_session.get(f"https://finviz.com/quote.ashx?t={sym}", headers=headers, timeout=10)
             if res.status_code == 200:
-                if pd.isna(f_pe):
-                    m = re.search(r'Forward P/E.*?<b>(.*?)</b>', res.text)
-                    if m and m.group(1) != '-': f_pe = float(m.group(1))
                 if pd.isna(ps):
                     m = re.search(r'P/S.*?<b>(.*?)</b>', res.text)
                     if m and m.group(1) != '-': ps = float(m.group(1))
@@ -124,11 +131,9 @@ def get_advanced_fundamentals(sym, is_bist):
                     if m and m.group(1) != '-': roe = float(m.group(1))
         except: pass
 
-    if pd.notna(f_pe) and (f_pe <= 0 or f_pe > 900): f_pe = np.nan
-    if pd.notna(ps) and (ps <= 0 or ps > 500): ps = np.nan
     return f_pe, ps, peg, roe, sec
 
-# DİNAMİK AĞIRLIKLI ALPHA (EKSİK VERİ TELAFİLİ)
+# DİNAMİK AĞIRLIKLI ALPHA (ADİL PUANLAMA)
 def calculate_alpha_score(ps, peg, roe):
     scores, weights = {}, {}
     if pd.notna(ps):
@@ -140,7 +145,9 @@ def calculate_alpha_score(ps, peg, roe):
     if pd.notna(roe):
         scores['roe'] = 100 if roe > 25 else (80 if roe > 15 else (50 if roe > 5 else 0))
         weights['roe'] = 0.30
+    
     if not scores: return np.nan
+    
     total_active_weight = sum(weights.values())
     final_score = 0
     for key in scores:
@@ -150,15 +157,13 @@ def calculate_alpha_score(ps, peg, roe):
 # --- 5. ANALİZ DÖNGÜSÜ ---
 if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
     with st.spinner("Piyasa fiyatlamaları indiriliyor..."):
-        data = get_prices(tickers + [bench_ticker, dxy_ticker]).ffill().dropna(subset=[bench_ticker])
+        data = yf.download(tickers + [bench_ticker], period="4y", interval="1d", progress=False)["Close"].ffill()
         p_idx = data[bench_ticker]
     
     results = []
     progress_bar = st.progress(0)
-    # --- DEBUG SATIRI BAŞLANGIÇ ---
     debug_container = st.empty()
-    st.write("---") 
-    # --- DEBUG SATIRI BİTİŞ ---
+    st.write("---")
     
     total = len(tickers)
     for i, s in enumerate(tickers):
@@ -168,6 +173,7 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
         f_pe, ps, peg, roe, sec = get_advanced_fundamentals(s, bist_mode)
         alpha = calculate_alpha_score(ps, peg, roe)
         
+        # Ban Koruması
         time.sleep(random.uniform(1.0, 2.0))
         
         if s in data.columns:
@@ -177,10 +183,8 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
                 beta = p_close.pct_change().corr(p_idx.pct_change())
                 ideal = rs / max(0.1, beta)
                 hist_chp = p_close.iloc[-1] / p_close.tail(lookback).mean() if len(p_close) >= lookback else -999
-            else:
-                rs, beta, ideal, hist_chp = 0, 1, 0, -999
-        else:
-            ideal, hist_chp = 0, -999
+            else: rs, beta, ideal, hist_chp = 0, 1, 0, -999
+        else: ideal, hist_chp = 0, -999
 
         results.append({
             "Hisse": s.replace(".IS", ""), "Sektör": sec, "İdealite (RS Rank)": ideal,
@@ -191,27 +195,27 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
     
     debug_container.success(f"[{datetime.now().strftime('%H:%M:%S')}] ANALİZ TAMAMLANDI.")
     
-    # --- 6. GÖRSELLEŞTİRME VE TABLOLAR ---
     df_master = pd.DataFrame(results).sort_values("İdealite (RS Rank)", ascending=False).reset_index(drop=True)
     df_master.index += 1
     
+    # --- 6. GÖRSELLEŞTİRME (TABLO 1 SOLDA, TABLO 2 SAĞDA) ---
     col1, col2 = st.columns(2)
     with col1:
         st.subheader("🔥 Tablo 1: İdealite (RS Rank)")
-        st.caption("ℹ️ **İdealite:** Momentum/Beta rasyosudur. **Teknik Ucuzluk:** Fiyatın 500 günlük ortalamaya oranıdır.")
+        st.caption("ℹ️ **Teknik:** Momentum/Beta rasyosu ve 500 günlük ortalama farkı.")
         st.dataframe(df_master[["Hisse", "Sektör", "İdealite (RS Rank)", "Teknik Ucuzluk"]].style
                      .set_properties(**{'text-align': 'left'})
                      .background_gradient(cmap='RdYlGn_r', subset=['Teknik Ucuzluk'], vmin=0.7, vmax=1.3)
-                     .format({"İdealite (RS Rank)": "{:.2f}", "Teknik Ucuzluk": lambda x: "IPO" if x == -999 else f"{x:.2f}"}), use_container_width=True)
+                     .format({"İdealite (RS Rank)": "{:.2f}", "Teknik Ucuzluk": lambda x: "IPO" if x == -999 else f"{x:.2f}"}, na_rep="Veri Yok"), use_container_width=True)
 
     with col2:
         st.subheader("🌟 Tablo 2: Alpha Puanı & Temeller")
-        st.caption("ℹ️ **Dinamik Alpha:** Eksik verilerin ağırlığını mevcut verilere dağıtan akıllı puanlama sistemidir.")
+        st.caption("ℹ️ **Alpha:** P/S, PEG ve ROE ağırlıklı dinamik puanlama.")
         st.dataframe(df_master[["Hisse", "Alpha Puanı", "Güncel P/S", "Fwd PEG", "ROE (%)", "İleri F/K"]].style
                      .set_properties(**{'text-align': 'left'})
                      .background_gradient(cmap='Greens', subset=['Alpha Puanı'], vmin=0, vmax=100)
                      .background_gradient(cmap='RdYlGn_r', subset=['Güncel P/S'], vmin=1, vmax=8)
-                     .format({"Alpha Puanı": "{:.0f}", "Güncel P/S": "{:.2f}x", "ROE (%)": "{:.1f}%"}), use_container_width=True)
+                     .format({"Alpha Puanı": "{:.0f}", "Güncel P/S": "{:.2f}x", "ROE (%)": "{:.1f}%", "Fwd PEG": "{:.2f}", "İleri F/K": "{:.2f}"}, na_rep="Veri Yok"), use_container_width=True)
 
     # --- 7. DİNAMİK TRADINGVIEW ÇIKTILARI ---
     st.divider()
