@@ -201,11 +201,23 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
     
     df_alpha = df_master[["Hisse", "Alpha Puanı", "Güncel P/S", "Fwd PEG", "ROE (%)", "İleri F/K"]]
     df_momentum = df_master[["Hisse", "Sektör", "İdealite (RS Rank)", "Teknik Ucuzluk"]]
-
     # Sütunlar oluşturulur
     col1, col2 = st.columns(2)
     
+    # SOL TARAF (col1): Tablo 1 (İdealite / RS Rank)
     with col1:
+        st.subheader("🔥 Tablo 1: İdealite (RS Rank)")
+        styled_momentum = (df_momentum.style
+                           .set_properties(**{'text-align': 'left'})
+                           .background_gradient(cmap='RdYlGn_r', subset=['Teknik Ucuzluk'], vmin=0.7, vmax=1.3)
+                           .format({
+                               "İdealite (RS Rank)": "{:.2f}",
+                               "Teknik Ucuzluk": lambda x: "IPO" if x == -999 else (f"{x:.2f}" if pd.notna(x) else "Veri Yok")
+                           }, na_rep="Veri Yok"))
+        st.dataframe(styled_momentum, use_container_width=True)
+
+    # SAĞ TARAF (col2): Tablo 2 (Alpha Puanı / Temel Analiz)
+    with col2:
         st.subheader("🌟 Tablo 2: Alpha Puanı & Temeller")
         styled_alpha = (df_alpha.style
                         .set_properties(**{'text-align': 'left'})
@@ -218,12 +230,7 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
                             "ROE (%)": "{:.1f}%", "İleri F/K": "{:.1f}"
                         }, na_rep="Veri Yok"))
         st.dataframe(styled_alpha, use_container_width=True)
-
-    with col2:
-        st.subheader("🔥 Tablo 1: İdealite (RS Rank)")
-        styled_momentum = (df_momentum.style
-                           .set_properties(**{'text-align': 'left'})
-                           .background_gradient(cmap='RdYlGn_r', subset=['Teknik Ucuzluk'], vmin=0.7, vmax=1.3)
+    cmap='RdYlGn_r', subset=['Teknik Ucuzluk'], vmin=0.7, vmax=1.3)
                            .format({
                                "İdealite (RS Rank)": "{:.2f}",
                                "Teknik Ucuzluk": lambda x: "IPO" if x == -999 else (f"{x:.2f}" if pd.notna(x) else "Veri Yok")
