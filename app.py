@@ -56,17 +56,14 @@ if "http_session" not in st.session_state:
 def calculate_alpha_score(ps, roe, f_pe):
     scores, weights = {}, {}
     
-    # P/S Puanı (%50) - Düşük iyi
     if pd.notna(ps) and ps > 0:
         scores['ps'] = 100 if ps < 2 else (80 if ps < 5 else (40 if ps < 10 else 10))
         weights['ps'] = 0.50
         
-    # ROE Puanı (%30) - Yüksek iyi
     if pd.notna(roe):
         scores['roe'] = 100 if roe > 25 else (70 if roe > 10 else (30 if roe > 0 else 0))
         weights['roe'] = 0.30
         
-    # İleri F/K Puanı (%20) - Makul düzey iyi
     if pd.notna(f_pe) and f_pe > 0:
         scores['fpe'] = 100 if f_pe < 20 else (70 if f_pe < 40 else (40 if f_pe < 70 else 10))
         weights['fpe'] = 0.20
@@ -76,12 +73,29 @@ def calculate_alpha_score(ps, roe, f_pe):
     total_active_weight = sum(weights.values())
     return sum(scores[k] * (weights[k] / total_active_weight) for k in scores)
 
-# --- 4. GİRDİLER VE GEMINI ---
+# --- 4. GİRDİLER VE GEMINI YAPAY ZEKA ---
 st.sidebar.header("Parametreler")
 bist_mode = st.sidebar.checkbox("🇹🇷 BIST Modu", value=False)
-tickers_input = st.sidebar.text_area("Hisseler", st.session_state.get('current_tickers', 'AAPL, NVDA, CVNA, PLTR, SHOP'), height=150)
+
+if "current_tickers" not in st.session_state:
+    st.session_state.current_tickers = "AAPL, NVDA, TSLA, CVNA, PLTR, SHOP, HOOD"
+
+uploaded_file = st.sidebar.file_uploader("Resim Yükle", type=["png", "jpg", "jpeg"])
+if uploaded_file and "GEMINI_API_KEY" in st.secrets:
+    if st.sidebar.button("✨ Resmi Oku"):
+        with st.spinner("Yapay Zeka resmi inceliyor..."):
+            try:
+                genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+                model = genai.GenerativeModel('gemini-2.5-flash')
+                response = model.generate_content(["Tickerları virgülle ver. Başka hiçbir kelime yazma.", Image.open(uploaded_file)])
+                st.session_state.current_tickers = response.text.strip()
+                st.rerun()
+            except Exception as e:
+                st.sidebar.error(f"YZ Bağlantı Hatası: {e}")
+
+tickers_input = st.sidebar.text_area("Hisseler", st.session_state.current_tickers, height=150)
 bench_ticker = st.sidebar.text_input("Endeks", "XU100.IS" if bist_mode else "^GSPC")
-lookback = st.sidebar.number_input("LookBack", value=500)
+lookback = st.sidebar.number_input("LookBack (Gün)", value=500)
 
 raw_tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
 tickers = [t + ".IS" if bist_mode and not t.endswith(".IS") else t for t in raw_tickers]
@@ -100,11 +114,8 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
     total = len(tickers)
     for i, s in enumerate(tickers):
         now = datetime.now().strftime('%H:%M:%S')
-        
-        # 1. Debug Satırı: Başvuru
         debug_msg = f"[{now}] 🔍 TALEP: {s} -> YahooQuery & Finviz Sorgulanıyor..."
         
-        # Veri Çekme (Öncelik YahooQuery)
         f_pe, ps, roe, sec = np.nan, np.nan, np.nan, "Bilinmiyor"
         try:
             yq = YQTicker(s)
@@ -116,7 +127,6 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
             sec = yq.asset_profile.get(s, {}).get('sector', 'Bilinmiyor')
         except: pass
 
-        # Finviz Fallback (Sağlam Regex ile)
         if not bist_mode and (pd.isna(ps) or pd.isna(roe)):
             try:
                 headers = {"User-Agent": random.choice(USER_AGENTS), "Referer": "https://finviz.com/"}
@@ -130,7 +140,6 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
                         if m and m.group(1) != '-': roe = float(m.group(1).replace('%', ''))
             except: pass
 
-        # 2. Debug Satırı: Sonuç
         res_status = "✅ BAŞARILI" if pd.notna(ps) else "⚠️ EKSİK VERİ"
         debug_msg += f"\n[{now}] {res_status}: P/S:{ps if pd.notna(ps) else 'N/A'} | ROE:{roe if pd.notna(roe) else 'N/A'} | F/K:{f_pe if pd.notna(f_pe) else 'N/A'}"
         debug_area.code(debug_msg)
@@ -138,7 +147,6 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
         alpha = calculate_alpha_score(ps, roe, f_pe)
         time.sleep(random.uniform(1.0, 2.0))
         
-        # RS Rank (Momentum) Hesaplaması
         ideal = 0
         if s in data.columns:
             p = data[s].dropna()
@@ -146,8 +154,22 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
                 rs = p.pct_change(63).tail(lookback).sum()
                 beta = p.pct_change().corr(data[bench_ticker].pct_change())
                 ideal = rs / max(0.1, beta)
+                hist_chp = p.iloc[-1] / p.tail(lookback).mean() if len(p) >= lookback else -999
+            else:
+                rs, beta, ideal, hist_chp = 0, 1, 0, -999
+        else:
+            ideal, hist_chp = 0, -999
 
-        results.append({"Hisse": s.replace(".IS",""), "Alpha Puanı": alpha, "Güncel P/S": ps, "ROE (%)": roe, "İleri F/K": f_pe, "İdealite": ideal, "Sektör": sec})
+        results.append({
+            "Hisse": s.replace(".IS",""), 
+            "Sektör": sec, 
+            "İdealite": ideal,
+            "Teknik Ucuzluk": hist_chp,
+            "Alpha Puanı": alpha, 
+            "Güncel P/S": ps, 
+            "ROE (%)": roe, 
+            "İleri F/K": f_pe
+        })
         progress_bar.progress((i+1)/total)
 
     # --- 6. GÖRSELLEŞTİRME ---
@@ -158,9 +180,13 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
     with col1:
         st.subheader("🔥 Tablo 1: İdealite (RS Rank)")
         st.caption("ℹ️ **Teknik:** Momentum/Beta rasyosu. Trenddeki en güçlü hisseleri zirveye taşır.")
-        st.dataframe(df_master[["Hisse", "Sektör", "İdealite"]].style
+        st.dataframe(df_master[["Hisse", "Sektör", "İdealite", "Teknik Ucuzluk"]].style
                      .set_properties(**{'text-align': 'left'})
-                     .background_gradient(cmap='RdYlGn', subset=['İdealite']), use_container_width=True)
+                     .background_gradient(cmap='RdYlGn_r', subset=['Teknik Ucuzluk'], vmin=0.7, vmax=1.3)
+                     .format({
+                         "İdealite": "{:.2f}", 
+                         "Teknik Ucuzluk": lambda x: "IPO" if x == -999 else f"{x:.2f}"
+                     }, na_rep="N/A"), use_container_width=True)
 
     with col2:
         st.subheader("🌟 Tablo 2: Alpha Puanı & Temeller")
@@ -169,14 +195,43 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
                      .set_properties(**{'text-align': 'left'})
                      .background_gradient(cmap='Greens', subset=['Alpha Puanı'], vmin=0, vmax=100)
                      .background_gradient(cmap='RdYlGn_r', subset=['Güncel P/S'], vmin=1, vmax=8)
-                     .format({"Alpha Puanı": "{:.0f}", "Güncel P/S": "{:.2f}x", "ROE (%)": "{:.1f}%", "İleri F/K": "{:.1f}"}, na_rep="N/A"), use_container_width=True)
+                     .format({
+                         "Alpha Puanı": "{:.2f}", 
+                         "Güncel P/S": "{:.2f}x", 
+                         "ROE (%)": "{:.2f}%", 
+                         "İleri F/K": "{:.2f}"
+                     }, na_rep="N/A"), use_container_width=True)
+
+    # --- YENİ BÖLÜM: 💎 GİZLİ HAZİNELER ---
+    st.divider()
+    st.subheader("💎 Tablo 3: Gizli Hazineler (Pusu Listesi)")
+    st.caption("ℹ️ **Strateji:** Momentum olarak listenin alt yarısında yer alan ancak temel değerlemesi (Alpha) en yüksek olan maksimum 10 hisse.")
+    
+    # İdealitesi listenin medyanından (ortalamasından) küçük olanları filtrele, Alpha'ya göre büyükten küçüğe diz, ilk 10'u al.
+    if len(df_master) > 1:
+        median_ideal = df_master["İdealite"].median()
+        df_hidden = df_master[df_master["İdealite"] < median_ideal].sort_values("Alpha Puanı", ascending=False).head(10).reset_index(drop=True)
+        df_hidden.index += 1
+        
+        st.dataframe(df_hidden[["Hisse", "Sektör", "Alpha Puanı", "İdealite", "Güncel P/S", "ROE (%)", "İleri F/K"]].style
+                     .set_properties(**{'text-align': 'left'})
+                     .background_gradient(cmap='Greens', subset=['Alpha Puanı'], vmin=0, vmax=100)
+                     .background_gradient(cmap='RdYlGn', subset=['İdealite'])
+                     .format({
+                         "Alpha Puanı": "{:.2f}", 
+                         "İdealite": "{:.2f}",
+                         "Güncel P/S": "{:.2f}x", 
+                         "ROE (%)": "{:.2f}%", 
+                         "İleri F/K": "{:.2f}"
+                     }, na_rep="N/A"), use_container_width=True)
+    else:
+        st.warning("Gizli Hazine analizi için listeye birden fazla hisse eklemelisiniz.")
 
     # --- 7. DİNAMİK TRADINGVIEW AKTARIM ---
     st.divider()
     st.subheader("📋 TradingView Aktarım Listeleri")
     sort_opt = st.radio("Listeyi Kopyalamadan Önce Sıralama Seçin:", ["İdealite", "Alpha Puanı", "Güncel P/S"], horizontal=True)
     
-    # Küçükten büyüğe mi (P/S için evet, diğerleri için hayır)
     df_ex = df_master.sort_values(sort_opt, ascending=(sort_opt=="Güncel P/S"))
     
     c3, c4 = st.columns(2)
