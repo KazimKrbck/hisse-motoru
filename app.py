@@ -32,7 +32,7 @@ def check_password():
 
 check_password()
 
-st.title("🦅 Alpha-Hunt: Değerleme & RS Motoru (PEG-Free)")
+st.title("🦅 Alpha-Hunt: Çift Filtreleme & RS Motoru")
 st.info(f"⏱️ **Sistem Hazır.** | 🖥️ Son Güncelleme: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 # --- 2. HAYALET OTURUM (STEALTH SESSION) ---
@@ -55,21 +55,17 @@ if "http_session" not in st.session_state:
 # --- 3. DİNAMİK ALPHA PUANLAMA (P/S %50, ROE %30, F/K %20) ---
 def calculate_alpha_score(ps, roe, f_pe):
     scores, weights = {}, {}
-    
     if pd.notna(ps) and ps > 0:
         scores['ps'] = 100 if ps < 2 else (80 if ps < 5 else (40 if ps < 10 else 10))
         weights['ps'] = 0.50
-        
     if pd.notna(roe):
         scores['roe'] = 100 if roe > 25 else (70 if roe > 10 else (30 if roe > 0 else 0))
         weights['roe'] = 0.30
-        
     if pd.notna(f_pe) and f_pe > 0:
         scores['fpe'] = 100 if f_pe < 20 else (70 if f_pe < 40 else (40 if f_pe < 70 else 10))
         weights['fpe'] = 0.20
     
     if not scores: return np.nan
-    
     total_active_weight = sum(weights.values())
     return sum(scores[k] * (weights[k] / total_active_weight) for k in scores)
 
@@ -114,8 +110,8 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
     total = len(tickers)
     for i, s in enumerate(tickers):
         now = datetime.now().strftime('%H:%M:%S')
-        debug_msg = f"[{now}] 🔍 TALEP: {s} -> YahooQuery & Finviz Sorgulanıyor..."
         
+        # Veri Çekme
         f_pe, ps, roe, sec = np.nan, np.nan, np.nan, "Bilinmiyor"
         try:
             yq = YQTicker(s)
@@ -140,14 +136,25 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
                         if m and m.group(1) != '-': roe = float(m.group(1).replace('%', ''))
             except: pass
 
+        # --- DEBUG EKRANI ---
         res_status = "✅ BAŞARILI" if pd.notna(ps) else "⚠️ EKSİK VERİ"
-        debug_msg += f"\n[{now}] {res_status}: P/S:{ps if pd.notna(ps) else 'N/A'} | ROE:{roe if pd.notna(roe) else 'N/A'} | F/K:{f_pe if pd.notna(f_pe) else 'N/A'}"
-        debug_area.code(debug_msg)
+        na_red = "<span style='color:#ff4b4b; font-weight:bold;'>N/A</span>"
+        ps_str = f"{ps:.2f}" if pd.notna(ps) else na_red
+        roe_str = f"{roe:.2f}" if pd.notna(roe) else na_red
+        fpe_str = f"{f_pe:.2f}" if pd.notna(f_pe) else na_red
+
+        terminal_html = f"""
+        <div style="background-color: #0e1117; padding: 15px; border-radius: 8px; border: 1px solid #444; font-family: monospace; color: #e6eaf1; line-height: 1.6;">
+            [{now}] 🔍 TALEP: <b>{s}</b> -> YahooQuery & Finviz Sorgulanıyor...<br>
+            [{now}] {res_status}: P/S: {ps_str} | ROE: {roe_str} | F/K: {fpe_str}
+        </div>
+        """
+        debug_area.markdown(terminal_html, unsafe_allow_html=True)
 
         alpha = calculate_alpha_score(ps, roe, f_pe)
         time.sleep(random.uniform(1.0, 2.0))
         
-        ideal = 0
+        ideal, hist_chp = 0, -999
         if s in data.columns:
             p = data[s].dropna()
             if len(p) > 63:
@@ -155,90 +162,68 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
                 beta = p.pct_change().corr(data[bench_ticker].pct_change())
                 ideal = rs / max(0.1, beta)
                 hist_chp = p.iloc[-1] / p.tail(lookback).mean() if len(p) >= lookback else -999
-            else:
-                rs, beta, ideal, hist_chp = 0, 1, 0, -999
-        else:
-            ideal, hist_chp = 0, -999
 
         results.append({
-            "Hisse": s.replace(".IS",""), 
-            "Sektör": sec, 
-            "İdealite": ideal,
-            "Teknik Ucuzluk": hist_chp,
-            "Alpha Puanı": alpha, 
-            "Güncel P/S": ps, 
-            "ROE (%)": roe, 
-            "İleri F/K": f_pe
+            "Hisse": s.replace(".IS",""), "Sektör": sec, "İdealite": ideal,
+            "Teknik Ucuzluk": hist_chp, "Alpha Puanı": alpha, "Güncel P/S": ps, 
+            "ROE (%)": roe, "İleri F/K": f_pe
         })
-        progress_bar.progress((i+1)/total)
+        progress_bar.progress((i+1)/len(tickers))
+
+    debug_area.markdown(f'<div style="background-color: #0e1117; padding: 15px; border-radius: 8px; border: 1px solid #198754; color: #198754; font-weight: bold; font-family: monospace;">[{datetime.now().strftime("%H:%M:%S")}] ✅ ANALİZ TAMAMLANDI.</div>', unsafe_allow_html=True)
 
     # --- 6. GÖRSELLEŞTİRME ---
     df_master = pd.DataFrame(results).sort_values("İdealite", ascending=False).reset_index(drop=True)
     df_master.index += 1
     
-    col1, col2 = st.columns(2)
-    with col1:
+    c1, c2 = st.columns(2)
+    with c1:
         st.subheader("🔥 Tablo 1: İdealite (RS Rank)")
-        st.caption("ℹ️ **Teknik:** Momentum/Beta rasyosu. Trenddeki en güçlü hisseleri zirveye taşır.")
         st.dataframe(df_master[["Hisse", "Sektör", "İdealite", "Teknik Ucuzluk"]].style
-                     .set_properties(**{'text-align': 'left'})
                      .background_gradient(cmap='RdYlGn_r', subset=['Teknik Ucuzluk'], vmin=0.7, vmax=1.3)
-                     .format({
-                         "İdealite": "{:.2f}", 
-                         "Teknik Ucuzluk": lambda x: "IPO" if x == -999 else f"{x:.2f}"
-                     }, na_rep="N/A"), use_container_width=True)
+                     .format({"İdealite": "{:.2f}", "Teknik Ucuzluk": lambda x: "IPO" if x == -999 else f"{x:.2f}"}, na_rep="N/A"), use_container_width=True)
 
-    with col2:
+    with c2:
         st.subheader("🌟 Tablo 2: Alpha Puanı & Temeller")
-        st.caption("ℹ️ **Alpha:** P/S (%50), ROE (%30), F/K (%20). Eksik veri ağırlığı diğerlerine dağıtılır.")
         st.dataframe(df_master[["Hisse", "Alpha Puanı", "Güncel P/S", "ROE (%)", "İleri F/K"]].style
-                     .set_properties(**{'text-align': 'left'})
                      .background_gradient(cmap='Greens', subset=['Alpha Puanı'], vmin=0, vmax=100)
                      .background_gradient(cmap='RdYlGn_r', subset=['Güncel P/S'], vmin=1, vmax=8)
-                     .format({
-                         "Alpha Puanı": "{:.2f}", 
-                         "Güncel P/S": "{:.2f}x", 
-                         "ROE (%)": "{:.2f}%", 
-                         "İleri F/K": "{:.2f}"
-                     }, na_rep="N/A"), use_container_width=True)
+                     .format({"Alpha Puanı": "{:.2f}", "Güncel P/S": "{:.2f}x", "ROE (%)": "{:.2f}%", "İleri F/K": "{:.2f}"}, na_rep="N/A"), use_container_width=True)
 
-    # --- YENİ BÖLÜM: 💎 GİZLİ HAZİNELER ---
+    # --- ÖZEL TABLOLAR: LİDERLER VE HAZİNELER ---
     st.divider()
-    st.subheader("💎 Tablo 3: Gizli Hazineler (Pusu Listesi)")
-    st.caption("ℹ️ **Strateji:** Momentum olarak listenin alt yarısında yer alan ancak temel değerlemesi (Alpha) en yüksek olan maksimum 10 hisse.")
-    
-    # İdealitesi listenin medyanından (ortalamasından) küçük olanları filtrele, Alpha'ya göre büyükten küçüğe diz, ilk 10'u al.
-    if len(df_master) > 1:
-        median_ideal = df_master["İdealite"].median()
-        df_hidden = df_master[df_master["İdealite"] < median_ideal].sort_values("Alpha Puanı", ascending=False).head(10).reset_index(drop=True)
-        df_hidden.index += 1
-        
-        st.dataframe(df_hidden[["Hisse", "Sektör", "Alpha Puanı", "İdealite", "Güncel P/S", "ROE (%)", "İleri F/K"]].style
-                     .set_properties(**{'text-align': 'left'})
-                     .background_gradient(cmap='Greens', subset=['Alpha Puanı'], vmin=0, vmax=100)
-                     .background_gradient(cmap='RdYlGn', subset=['İdealite'])
-                     .format({
-                         "Alpha Puanı": "{:.2f}", 
-                         "İdealite": "{:.2f}",
-                         "Güncel P/S": "{:.2f}x", 
-                         "ROE (%)": "{:.2f}%", 
-                         "İleri F/K": "{:.2f}"
-                     }, na_rep="N/A"), use_container_width=True)
-    else:
-        st.warning("Gizli Hazine analizi için listeye birden fazla hisse eklemelisiniz.")
+    median_ideal = df_master["İdealite"].median()
+
+    # Tablo 3: Piyasa Liderleri (Hem RS Hem Alpha Yüksek)
+    st.subheader("🦅 Tablo 3: Piyasa Liderleri (Kutsal Kâse)")
+    st.caption("ℹ️ Momentum olarak listenin üst yarısında olup, Alpha Puanı en yüksek olan 20 lider hisse.")
+    df_leaders = df_master[df_master["İdealite"] >= median_ideal].sort_values("Alpha Puanı", ascending=False).head(20).reset_index(drop=True)
+    df_leaders.index += 1
+    st.dataframe(df_leaders[["Hisse", "Sektör", "Alpha Puanı", "İdealite", "Güncel P/S", "ROE (%)", "İleri F/K"]].style
+                 .background_gradient(cmap='Greens', subset=['Alpha Puanı'], vmin=0, vmax=100)
+                 .background_gradient(cmap='RdYlGn', subset=['İdealite'])
+                 .format({"Alpha Puanı": "{:.2f}", "İdealite": "{:.2f}", "Güncel P/S": "{:.2f}x", "ROE (%)": "{:.2f}%", "İleri F/K": "{:.2f}"}, na_rep="N/A"), use_container_width=True)
+
+    # Tablo 4: Gizli Hazineler (RS Düşük, Alpha Yüksek)
+    st.subheader("💎 Tablo 4: Gizli Hazineler (Pusu Listesi)")
+    st.caption("ℹ️ Momentum olarak listenin alt yarısında kalmış ancak temel değerlemesi (Alpha) zirvede olan 10 hisse.")
+    df_hidden = df_master[df_master["İdealite"] < median_ideal].sort_values("Alpha Puanı", ascending=False).head(10).reset_index(drop=True)
+    df_hidden.index += 1
+    st.dataframe(df_hidden[["Hisse", "Sektör", "Alpha Puanı", "İdealite", "Güncel P/S", "ROE (%)", "İleri F/K"]].style
+                 .background_gradient(cmap='Greens', subset=['Alpha Puanı'], vmin=0, vmax=100)
+                 .background_gradient(cmap='RdYlGn', subset=['İdealite'])
+                 .format({"Alpha Puanı": "{:.2f}", "İdealite": "{:.2f}", "Güncel P/S": "{:.2f}x", "ROE (%)": "{:.2f}%", "İleri F/K": "{:.2f}"}, na_rep="N/A"), use_container_width=True)
 
     # --- 7. DİNAMİK TRADINGVIEW AKTARIM ---
     st.divider()
     st.subheader("📋 TradingView Aktarım Listeleri")
-    sort_opt = st.radio("Listeyi Kopyalamadan Önce Sıralama Seçin:", ["İdealite", "Alpha Puanı", "Güncel P/S"], horizontal=True)
-    
+    sort_opt = st.radio("Sıralama Seçin:", ["İdealite", "Alpha Puanı", "Güncel P/S"], horizontal=True)
     df_ex = df_master.sort_values(sort_opt, ascending=(sort_opt=="Güncel P/S"))
-    
     c3, c4 = st.columns(2)
-    prefix = "BIST:" if bist_mode else "NASDAQ:"
+    pfx = "BIST:" if bist_mode else "NASDAQ:"
     with c3:
-        st.success(f"**Takip Listesi ({sort_opt} Sıralı)**")
-        st.code(",".join([f"{prefix}{s}" for s in df_ex["Hisse"]]))
+        st.success(f"**Takip Listesi ({sort_opt})**")
+        st.code(",".join([f"{pfx}{s}" for s in df_ex["Hisse"]]))
     with c4:
-        st.info(f"**Isı Haritası Girdisi (İlk 38 - {sort_opt} Sıralı)**")
+        st.info(f"**Isı Haritası Girdisi ({sort_opt})**")
         st.code(" \n".join([f"{i+1}. {sym}" for i, sym in enumerate(df_ex["Hisse"].head(38))]))
