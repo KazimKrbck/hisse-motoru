@@ -1,5 +1,6 @@
 streamlit
 yfinance
+yahooquery
 pandas
 numpy
 requests
@@ -7,4 +8,3 @@ google-generativeai
 Pillow
 jinja2
 matplotlib
-yahooquery
