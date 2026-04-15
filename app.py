@@ -151,7 +151,7 @@ if st.sidebar.button("🚀 Analizi Başlat", type="primary"):
         debug_area.markdown(terminal_html, unsafe_allow_html=True)
 
         alpha = calculate_alpha_score(ps, roe, f_pe)
-        time.sleep(random.uniform(1.0, 2.0))
+        time.sleep(random.uniform(3.0, 5.0))
         
         ideal, hist_chp = 0, -999
         if s in data.columns:
